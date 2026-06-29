@@ -1,0 +1,32 @@
+{
+  "database": {
+    "path": "runtime/rok_assistant.sqlite3"
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "runtime/logs/app.log"
+  },
+  "emulator": {
+    "memu_install_path": "C:\\MEmu\\Microvirt\\MEmu"
+  },
+  "scheduler": {
+    "max_workers": 5,
+    "max_active_instances": 1,
+    "retry_delay_minutes": 10,
+    "pre_launch_minutes": 2,
+    "poll_interval_seconds": 5
+  },
+  "gathering": {
+    "preferred_resource_levels": [
+      8,
+      7,
+      6
+    ],
+    "minimum_resource_level": 6
+  },
+  "plugins": {
+    "packages": [
+      "rok_assistant.plugins"
+    ]
+  }
+}
