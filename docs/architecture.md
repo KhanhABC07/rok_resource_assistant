@@ -215,6 +215,12 @@ The manager can:
 
 Process detection is local to the running application session. For production use, add emulator-specific detection by window title, process name, or vendor CLI.
 
+## Emulator Provider Boundary
+
+MEmu command execution is isolated behind the emulator provider adapter. The provider builds command argument lists with Windows path semantics, executes `memuc.exe` and `memuc.exe adb` commands without `shell=True`, and returns typed command results containing the command, exit code, stdout, stderr, duration, target instance, and error category.
+
+The legacy `MEmuManager`, `MEmuAdbManager`, and `MEmuAdbInputManager` APIs remain backward-compatible for existing callers. They delegate to the provider and continue returning booleans, status dictionaries, and screenshot paths where older GUI and task code expects those shapes.
+
 ## Character Manager Design
 
 Characters are assigned to instances and may share an account name. The manager caches the active character per instance to minimize unnecessary switching. Real account switching should be implemented in a task or GUI automation plugin.

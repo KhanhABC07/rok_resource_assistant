@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from rok_assistant.emulator.memu_adb_manager import MEmuAdbManager
+from rok_assistant.emulator.provider import EmulatorCommandResult
 
 
 class MEmuAdbInputManager:
@@ -18,28 +19,37 @@ class MEmuAdbInputManager:
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def tap(self, x: int, y: int) -> bool:
-        return self._input(["tap", str(x), str(y)], f"tap {x} {y}")
+        return self._input(
+            self.adb_manager.provider.tap(self.instance_index, x, y),
+            f"tap {x} {y}",
+        )
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> bool:
         return self._input(
-            ["swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms)],
+            self.adb_manager.provider.swipe(
+                self.instance_index,
+                x1,
+                y1,
+                x2,
+                y2,
+                duration_ms,
+            ),
             f"swipe {x1} {y1} {x2} {y2} {duration_ms}",
         )
 
     def keyevent(self, code: int) -> bool:
-        return self._input(["keyevent", str(code)], f"keyevent {code}")
+        return self._input(
+            self.adb_manager.provider.keyevent(self.instance_index, code),
+            f"keyevent {code}",
+        )
 
-    def _input(self, input_args: list[str], display_command: str) -> bool:
+    def _input(self, result: EmulatorCommandResult[None], display_command: str) -> bool:
         self.logger.info(
             "[MEmu][ADB][Input] %s on %s",
             display_command,
             self.instance_name,
         )
-        result = self.adb_manager._run_adb_text(  # noqa: SLF001 - same-layer adapter.
-            self.instance_index,
-            ["shell", "input", *input_args],
-        )
-        success = self.adb_manager._command_succeeded(result)  # noqa: SLF001
+        success = result.succeeded
         if success:
             self.logger.info(
                 "[MEmu][ADB][Input] %s on %s success",
@@ -48,10 +58,12 @@ class MEmuAdbInputManager:
             )
             return True
 
-        if result is None:
-            message = "command did not run"
-        else:
-            message = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        message = (
+            result.error_message
+            or result.stderr.strip()
+            or result.stdout.strip()
+            or result.error_category.value
+        )
         self.logger.error(
             "[MEmu][ADB][Input] %s on %s failed: %s",
             display_command,

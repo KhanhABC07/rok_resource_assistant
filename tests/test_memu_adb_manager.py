@@ -91,6 +91,9 @@ class MEmuAdbManagerTest(unittest.TestCase):
 
             self.assertIsNotNone(path)
             self.assertEqual(png_bytes, path.read_bytes())  # type: ignore[union-attr]
+            remote_path = calls[0][-1]
+            self.assertTrue(remote_path.startswith("/sdcard/rok_capture_2_"))
+            self.assertTrue(remote_path.endswith(".png"))
             self.assertEqual(
                 [
                     [
@@ -101,7 +104,7 @@ class MEmuAdbManagerTest(unittest.TestCase):
                         "shell",
                         "screencap",
                         "-p",
-                        "/sdcard/rok_capture.png",
+                        remote_path,
                     ],
                     [
                         r"C:\MEmu\Microvirt\MEmu\memuc.exe",
@@ -109,7 +112,7 @@ class MEmuAdbManagerTest(unittest.TestCase):
                         "-i",
                         "2",
                         "pull",
-                        "/sdcard/rok_capture.png",
+                        remote_path,
                         str(path),
                     ],
                     [
@@ -119,7 +122,7 @@ class MEmuAdbManagerTest(unittest.TestCase):
                         "2",
                         "shell",
                         "rm",
-                        "/sdcard/rok_capture.png",
+                        remote_path,
                     ]
                 ],
                 calls,
