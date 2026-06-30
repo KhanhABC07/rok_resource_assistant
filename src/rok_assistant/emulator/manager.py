@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -11,6 +11,11 @@ from typing import Callable
 from rok_assistant.db.models import Instance
 from rok_assistant.db.repositories import InstanceRepository
 from rok_assistant.emulator.memu_manager import MEmuManager
+from rok_assistant.emulator.provider import (
+    CommandRunner,
+    LEGACY_COMMAND_TIMEOUT_SECONDS,
+    execute_legacy_command,
+)
 
 
 class EmulatorState(str, Enum):
@@ -23,8 +28,7 @@ class EmulatorState(str, Enum):
 @dataclass
 class ManagedProcess:
     instance_id: int
-    process: subprocess.Popen
-    command: str
+    command: tuple[str, ...]
 
 
 class EmulatorManager:
@@ -33,10 +37,14 @@ class EmulatorManager:
         instance_repository: InstanceRepository,
         memu_manager: MEmuManager | None = None,
         max_concurrent_provider: Callable[[], int] | None = None,
+        command_timeout_seconds: int = LEGACY_COMMAND_TIMEOUT_SECONDS,
+        command_runner: CommandRunner | None = None,
     ):
         self.instances = instance_repository
         self.memu_manager = memu_manager or MEmuManager()
         self.max_concurrent_provider = max_concurrent_provider or (lambda: 5)
+        self.command_timeout_seconds = command_timeout_seconds
+        self.command_runner = command_runner
         self.logger = logging.getLogger(self.__class__.__name__)
         self._lock = threading.RLock()
         self._processes: dict[int, ManagedProcess] = {}
@@ -77,7 +85,7 @@ class EmulatorManager:
                 self.logger.info("[MEmu] Start instance %s success", instance.name)
             return success
 
-        if not instance.launch_command.strip():
+        if self._command_is_empty(instance.launch_command):
             self.logger.warning("Instance %s has no launch command configured.", instance.name)
             with self._lock:
                 self._starting_instances.discard(instance.id)
@@ -93,25 +101,27 @@ class EmulatorManager:
             return False
 
         self.logger.info("Launching emulator instance %s", instance.name)
-        with self._lock:
-            try:
-                process = subprocess.Popen(
-                    instance.launch_command,
-                    cwd=str(cwd) if cwd else None,
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except OSError as exc:
-                self.logger.exception("Launch failed for instance %s", instance.name)
+        result = execute_legacy_command(
+            instance.launch_command,
+            cwd=cwd,
+            timeout_seconds=self.command_timeout_seconds,
+            command_runner=self.command_runner,
+        )
+        if not result.succeeded:
+            self.logger.error(
+                "Launch failed for instance %s: %s",
+                instance.name,
+                result.error_message or result.stderr or result.error_category.value,
+            )
+            with self._lock:
                 self._starting_instances.discard(instance.id)
                 self._states[instance.id] = EmulatorState.FAILED
-                return False
+            return False
 
+        with self._lock:
             self._processes[instance.id] = ManagedProcess(
                 instance_id=instance.id,
-                process=process,
-                command=instance.launch_command,
+                command=result.command,
             )
             self._starting_instances.discard(instance.id)
             self._states[instance.id] = EmulatorState.RUNNING
@@ -134,23 +144,23 @@ class EmulatorManager:
             return success
 
         with self._lock:
-            if instance.close_command.strip():
-                try:
-                    subprocess.Popen(
-                        instance.close_command,
-                        cwd=instance.launch_path or None,
-                        shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+            if not self._command_is_empty(instance.close_command):
+                cwd = Path(instance.launch_path).expanduser() if instance.launch_path.strip() else None
+                result = execute_legacy_command(
+                    instance.close_command,
+                    cwd=cwd,
+                    timeout_seconds=self.command_timeout_seconds,
+                    command_runner=self.command_runner,
+                )
+                if not result.succeeded:
+                    self.logger.error(
+                        "Close command failed for instance %s: %s",
+                        instance.name,
+                        result.error_message or result.stderr or result.error_category.value,
                     )
-                except OSError:
-                    self.logger.exception("Close command failed for instance %s", instance.name)
                     self._states[instance.id] = EmulatorState.FAILED
                     return False
 
-            managed = self._processes.get(instance.id)
-            if managed and managed.process.poll() is None:
-                managed.process.terminate()
             self._processes.pop(instance.id, None)
             self._states[instance.id] = EmulatorState.STOPPED
             return True
@@ -174,20 +184,13 @@ class EmulatorManager:
             managed = self._processes.get(instance.id)
             if managed is None:
                 return self._states.get(instance.id) == EmulatorState.RUNNING
-            running = managed.process.poll() is None
-            self._states[instance.id] = EmulatorState.RUNNING if running else EmulatorState.STOPPED
-            if not running:
-                self._processes.pop(instance.id, None)
-            return running
+            return self._states.get(instance.id) == EmulatorState.RUNNING
 
     def state_for(self, instance_id: int) -> EmulatorState:
         instance = self.instances.get(instance_id)
         if instance and instance.instance_index is not None:
             return EmulatorState.RUNNING if self.is_running(instance) else EmulatorState.STOPPED
         with self._lock:
-            managed = self._processes.get(instance_id)
-            if managed and managed.process.poll() is None:
-                return EmulatorState.RUNNING
             return self._states.get(instance_id, EmulatorState.STOPPED)
 
     def running_count(self) -> int:
@@ -206,3 +209,9 @@ class EmulatorManager:
             return max(1, int(self.max_concurrent_provider()))
         except (TypeError, ValueError):
             return 5
+
+    @staticmethod
+    def _command_is_empty(command: str | Sequence[str]) -> bool:
+        if isinstance(command, str):
+            return not command.strip()
+        return not command
