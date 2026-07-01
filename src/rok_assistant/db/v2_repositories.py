@@ -730,6 +730,13 @@ class JobRunRepository:
     def __init__(self, db: Database):
         self.db = db
 
+    def get(self, run_id: int) -> JobRun | None:
+        row = self.db.fetch_one(
+            "SELECT * FROM job_runs WHERE id = ?",
+            (run_id,),
+        )
+        return self._from_row(row) if row else None
+
     def save(self, run: JobRun) -> int:
         job_id = require_id(run.job_id, "job_id")
         run_key = require_text(run.run_key, "run_key")
@@ -839,6 +846,13 @@ class JobRunRepository:
 class StepRunRepository:
     def __init__(self, db: Database):
         self.db = db
+
+    def get(self, run_id: int) -> StepRun | None:
+        row = self.db.fetch_one(
+            "SELECT * FROM step_runs WHERE id = ?",
+            (run_id,),
+        )
+        return self._from_row(row) if row else None
 
     def save(self, run: StepRun) -> int:
         job_run_id = require_id(run.job_run_id, "job_run_id")
