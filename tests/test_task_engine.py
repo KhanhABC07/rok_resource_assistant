@@ -384,10 +384,11 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("Missing RepeatEnd", result.message)
 
-    def test_runner_detects_nested_repeat_error(self) -> None:
+    def test_runner_executes_nested_repeat_blocks(self) -> None:
+        fake_engine = FakeActionEngine()
         runner = TaskRunner(
             FakeAdbManager(),  # type: ignore[arg-type]
-            action_engine_factory=lambda _index, _name: FakeActionEngine(),  # type: ignore[arg-type]
+            action_engine_factory=lambda _index, _name: fake_engine,  # type: ignore[arg-type]
             sleeper=lambda _seconds: None,
         )
         result = runner.run_task(
@@ -395,15 +396,24 @@ class TaskRunnerTest(unittest.TestCase):
             [
                 TaskStep(order=1, action_type="RepeatStart", parameters={"count": 2}),
                 TaskStep(order=2, action_type="RepeatStart", parameters={"count": 2}),
-                TaskStep(order=3, action_type="RepeatEnd", parameters={}),
+                TaskStep(order=3, action_type="ClickCoordinates", parameters={"x": 1, "y": 2}),
                 TaskStep(order=4, action_type="RepeatEnd", parameters={}),
+                TaskStep(order=5, action_type="RepeatEnd", parameters={}),
             ],
             instance_index=0,
             instance_name="MEmu",
         )
 
-        self.assertFalse(result.success)
-        self.assertIn("Nested repeat", result.message)
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [
+                ("ClickCoordinates", (1, 2)),
+                ("ClickCoordinates", (1, 2)),
+                ("ClickCoordinates", (1, 2)),
+                ("ClickCoordinates", (1, 2)),
+            ],
+            fake_engine.calls,
+        )
 
     def test_runner_detects_repeat_end_without_start(self) -> None:
         runner = TaskRunner(
@@ -456,7 +466,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(
             [
-                ("WaitTemplate", ("ready.png", 0.8, 2.0, 0.5)),
+                ("WaitTemplate", ("ready.png", 0.8, 0.25, 0.25)),
                 ("ClickCoordinates", (10, 20)),
             ],
             fake_engine.calls,
@@ -499,7 +509,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(TaskResult.ABORTED, result.result)
         self.assertEqual(
             [
-                ("WaitTemplate", ("ready.png", 0.8, 2.0, 0.5)),
+                ("WaitTemplate", ("ready.png", 0.8, 0.25, 0.25)),
                 ("AbortTask", ()),
             ],
             fake_engine.calls,
@@ -540,7 +550,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(
             [
-                ("WaitTemplate", ("missing.png", 0.8, 2.0, 0.5)),
+                ("WaitTemplate", ("missing.png", 0.8, 0.25, 0.25)),
                 ("ClickCoordinates", (30, 40)),
             ],
             fake_engine.calls,
@@ -583,7 +593,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(TaskResult.SUCCESS, result.result)
         self.assertEqual(
             [
-                ("WaitTemplate", ("missing.png", 0.8, 2.0, 0.5)),
+                ("WaitTemplate", ("missing.png", 0.8, 0.25, 0.25)),
                 ("ClickCoordinates", (30, 40)),
             ],
             fake_engine.calls,
@@ -621,26 +631,44 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("Else without IfTemplateExists", result.message)
 
-    def test_runner_detects_nested_if_error(self) -> None:
+    def test_runner_executes_nested_if_blocks(self) -> None:
+        fake_engine = FakeActionEngine()
+        fake_engine.template_exists = True
         runner = TaskRunner(
             FakeAdbManager(),  # type: ignore[arg-type]
-            action_engine_factory=lambda _index, _name: FakeActionEngine(),  # type: ignore[arg-type]
+            action_engine_factory=lambda _index, _name: fake_engine,  # type: ignore[arg-type]
             sleeper=lambda _seconds: None,
         )
         result = runner.run_task(
             Task(id=17, name="Nested If", enabled=True),
             [
-                TaskStep(order=1, action_type="IfTemplateExists", parameters={}),
-                TaskStep(order=2, action_type="IfTemplateExists", parameters={}),
-                TaskStep(order=3, action_type="EndIf", parameters={}),
+                TaskStep(
+                    order=1,
+                    action_type="IfTemplateExists",
+                    parameters={"template_path": "outer.png"},
+                ),
+                TaskStep(
+                    order=2,
+                    action_type="IfTemplateExists",
+                    parameters={"template_path": "inner.png"},
+                ),
+                TaskStep(order=3, action_type="ClickCoordinates", parameters={"x": 5, "y": 6}),
                 TaskStep(order=4, action_type="EndIf", parameters={}),
+                TaskStep(order=5, action_type="EndIf", parameters={}),
             ],
             instance_index=0,
             instance_name="MEmu",
         )
 
-        self.assertFalse(result.success)
-        self.assertIn("Nested If", result.message)
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [
+                ("WaitTemplate", ("outer.png", 0.8, 0.25, 0.25)),
+                ("WaitTemplate", ("inner.png", 0.8, 0.25, 0.25)),
+                ("ClickCoordinates", (5, 6)),
+            ],
+            fake_engine.calls,
+        )
 
     def test_runner_detects_duplicate_else(self) -> None:
         runner = TaskRunner(
