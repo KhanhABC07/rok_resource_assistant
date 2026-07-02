@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from .database import Database
@@ -290,6 +293,13 @@ class ScheduleDefinitionRepository:
     def __init__(self, db: Database):
         self.db = db
 
+    def get(self, schedule_id: int) -> ScheduleDefinition | None:
+        row = self.db.fetch_one(
+            "SELECT * FROM schedule_definitions WHERE id = ?",
+            (schedule_id,),
+        )
+        return self._from_row(row) if row else None
+
     def save(self, schedule: ScheduleDefinition) -> int:
         profile_id = require_id(schedule.profile_id, "profile_id")
         schedule_key = require_text(schedule.schedule_key, "schedule_key")
@@ -378,6 +388,28 @@ class ScheduleDefinitionRepository:
             (profile_id,),
         )
         return [self._from_row(row) for row in rows]
+
+    def list_enabled(self) -> list[ScheduleDefinition]:
+        rows = self.db.fetch_all(
+            """
+            SELECT *
+            FROM schedule_definitions
+            WHERE enabled = 1
+            ORDER BY profile_id ASC, schedule_key COLLATE NOCASE ASC, id ASC
+            """
+        )
+        return [self._from_row(row) for row in rows]
+
+    def update_config_json(self, schedule_id: int, config_json: str) -> None:
+        with self.db.transaction():
+            self.db.execute(
+                """
+                UPDATE schedule_definitions
+                SET config_json = ?
+                WHERE id = ?
+                """,
+                (json_object_text(config_json, "config_json"), schedule_id),
+            )
 
     @staticmethod
     def _from_row(row: Any) -> ScheduleDefinition:
@@ -617,9 +649,43 @@ class WorkflowStepRepository:
         )
 
 
+SCHEDULER_PAYLOAD_KEY = "_scheduler"
+SCHEDULER_CLAIM_KEY = "claim"
+SCHEDULER_DISPATCH_KEY = "dispatch"
+SCHEDULER_RECOVERY_KEY = "last_recovery"
+ACTIVE_JOB_STATUSES = ("queued", "running")
+TERMINAL_JOB_STATUSES = ("completed", "failed", "aborted", "cancelled")
+SCHEDULER_JOB_STATUS_TRANSITIONS: dict[str, tuple[str, ...]] = {
+    "pending": ("queued", "cancelled"),
+    "queued": ("pending", "running", "failed", "aborted", "cancelled"),
+    "running": ("completed", "failed", "aborted", "cancelled"),
+    "completed": (),
+    "failed": (),
+    "aborted": (),
+    "cancelled": (),
+}
+
+
+@dataclass(frozen=True)
+class JobRecoveryResult:
+    state: str
+    job_id: int
+    previous_status: str
+    new_status: str = ""
+    reason: str = ""
+    job: Job | None = None
+
+
 class JobRepository:
     def __init__(self, db: Database):
         self.db = db
+
+    def get(self, job_id: int) -> Job | None:
+        row = self.db.fetch_one(
+            "SELECT * FROM jobs WHERE id = ?",
+            (job_id,),
+        )
+        return self._from_row(row) if row else None
 
     def save(self, job: Job) -> int:
         idempotency_key = require_text(job.idempotency_key, "idempotency_key")
@@ -689,6 +755,46 @@ class JobRepository:
             )
             return job.id
 
+    def create_if_absent(self, job: Job) -> tuple[Job, bool]:
+        """Insert a job idempotently without overwriting existing semantics."""
+
+        idempotency_key = require_text(job.idempotency_key, "idempotency_key")
+        job_type = require_text(job.job_type, "job_type")
+        status = validate_choice(job.status, JOB_STATUSES, "status")
+        scheduled_for = require_text(job.scheduled_for, "scheduled_for")
+        payload_json = json_object_text(job.payload_json, "payload_json")
+        values = (
+            job.workflow_id,
+            job.schedule_id,
+            job.character_id,
+            idempotency_key,
+            job_type,
+            status,
+            job.priority,
+            scheduled_for,
+            payload_json,
+        )
+        with self.db.transaction():
+            cursor = self.db.execute(
+                """
+                INSERT OR IGNORE INTO jobs(
+                    workflow_id, schedule_id, character_id, idempotency_key,
+                    job_type, status, priority, scheduled_for, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            existing = self.get_by_key(idempotency_key)
+            if existing is None:
+                raise RuntimeError("Job insert did not persist a readable row.")
+            created = cursor.rowcount == 1
+            if not created and not _same_job_semantics(existing, job, payload_json):
+                raise ValueError(
+                    "Existing job has different semantic content for idempotency_key."
+                )
+            return existing, created
+
     def get_by_key(self, idempotency_key: str) -> Job | None:
         row = self.db.fetch_one(
             "SELECT * FROM jobs WHERE idempotency_key = ?",
@@ -708,6 +814,296 @@ class JobRepository:
         )
         return [self._from_row(row) for row in rows]
 
+    def list_due_for_claim(self, scheduled_at_or_before: str, limit: int) -> list[Job]:
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero.")
+        rows = self.db.fetch_all(
+            """
+            SELECT *
+            FROM jobs
+            WHERE status = 'pending' AND scheduled_for <= ?
+            ORDER BY priority ASC, scheduled_for ASC, id ASC
+            LIMIT ?
+            """,
+            (require_text(scheduled_at_or_before, "scheduled_at_or_before"), limit),
+        )
+        return [self._from_row(row) for row in rows]
+
+    def list_stale_active_for_recovery(self, stale_at_or_before: str) -> list[Job]:
+        stale_cutoff = require_text(stale_at_or_before, "stale_at_or_before")
+        rows = self.db.fetch_all(
+            """
+            SELECT *
+            FROM jobs
+            WHERE status IN ('queued', 'running')
+            ORDER BY priority ASC, scheduled_for ASC, id ASC
+            """
+        )
+        jobs = [self._from_row(row) for row in rows]
+        stale_jobs: list[Job] = []
+        for job in jobs:
+            claimed_at = _claim_started_at(job.payload_json)
+            if (
+                claimed_at is not None
+                and claimed_at <= stale_cutoff
+                or claimed_at is None
+                and _has_malformed_scheduler_metadata(job.payload_json)
+            ):
+                stale_jobs.append(job)
+        return stale_jobs
+
+    def recover_stale_active_job(
+        self,
+        job_id: int,
+        expected_status: str,
+        expected_payload_json: str,
+        stale_at_or_before: str,
+        recovered_at: str,
+    ) -> JobRecoveryResult:
+        expected = validate_choice(expected_status, JOB_STATUSES, "expected_status")
+        if expected not in ACTIVE_JOB_STATUSES:
+            raise ValueError(f"Unsupported stale recovery status: {expected}")
+        stale_cutoff = require_text(stale_at_or_before, "stale_at_or_before")
+        recovery_time = require_text(recovered_at, "recovered_at")
+        with self.db.transaction():
+            current = self.get(job_id)
+            if current is None:
+                return JobRecoveryResult(
+                    state="skipped",
+                    job_id=job_id,
+                    previous_status=expected,
+                    reason="Job was not found.",
+                )
+            if current.status in TERMINAL_JOB_STATUSES:
+                return JobRecoveryResult(
+                    state="skipped",
+                    job_id=job_id,
+                    previous_status=current.status,
+                    reason="Job is terminal.",
+                    job=current,
+                )
+            if (
+                current.status != expected
+                or current.payload_json != expected_payload_json
+            ):
+                return JobRecoveryResult(
+                    state="conflict",
+                    job_id=job_id,
+                    previous_status=current.status,
+                    reason="Job changed before recovery.",
+                    job=current,
+                )
+            claimed_at = _claim_started_at(current.payload_json)
+            if claimed_at is None:
+                if not _has_malformed_scheduler_metadata(current.payload_json):
+                    return JobRecoveryResult(
+                        state="skipped",
+                        job_id=job_id,
+                        previous_status=current.status,
+                        reason="Job has no scheduler claim metadata.",
+                        job=current,
+                    )
+            if claimed_at is not None and claimed_at > stale_cutoff:
+                return JobRecoveryResult(
+                    state="skipped",
+                    job_id=job_id,
+                    previous_status=current.status,
+                    reason="Job claim is still fresh.",
+                    job=current,
+            )
+
+            new_status, reason = _stale_recovery_target(
+                current.status,
+                current.payload_json,
+                malformed_metadata=(
+                    claimed_at is None
+                    and _has_malformed_scheduler_metadata(current.payload_json)
+                ),
+            )
+            _validate_job_transition(current.status, new_status)
+            payload_json = _payload_for_recovery(
+                current.payload_json,
+                previous_status=current.status,
+                new_status=new_status,
+                recovered_at=recovery_time,
+                reason=reason,
+            )
+            cursor = self.db.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    payload_json = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND payload_json = ?
+                """,
+                (
+                    new_status,
+                    payload_json,
+                    job_id,
+                    current.status,
+                    current.payload_json,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return JobRecoveryResult(
+                    state="conflict",
+                    job_id=job_id,
+                    previous_status=current.status,
+                    reason="Job changed during recovery.",
+                )
+            recovered = self.get(job_id)
+            return JobRecoveryResult(
+                state="recovered",
+                job_id=job_id,
+                previous_status=current.status,
+                new_status=new_status,
+                reason=reason,
+                job=recovered,
+            )
+
+    def transition_status_if_current(
+        self,
+        job_id: int,
+        expected_status: str,
+        new_status: str,
+        *,
+        claimed_at: str | None = None,
+    ) -> Job | None:
+        expected = validate_choice(expected_status, JOB_STATUSES, "expected_status")
+        new = validate_choice(new_status, JOB_STATUSES, "new_status")
+        _validate_job_transition(expected, new)
+        with self.db.transaction():
+            current = self.get(job_id)
+            if current is None or current.status != expected:
+                return None
+            payload_json = _payload_for_transition(
+                current.payload_json,
+                expected_status=expected,
+                new_status=new,
+                claimed_at=claimed_at,
+            )
+            cursor = self.db.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    payload_json = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND payload_json = ?
+                """,
+                (new, payload_json, job_id, expected, current.payload_json),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return self.get(job_id)
+
+    def mark_dispatching_if_current(
+        self,
+        job_id: int,
+        expected_payload_json: str,
+        *,
+        dispatch_started_at: str,
+        dispatch_key: str,
+    ) -> Job | None:
+        with self.db.transaction():
+            current = self.get(job_id)
+            if (
+                current is None
+                or current.status != "queued"
+                or current.payload_json != expected_payload_json
+            ):
+                return None
+            payload_json = _payload_for_dispatching(
+                current.payload_json,
+                dispatch_started_at=dispatch_started_at,
+                dispatch_key=dispatch_key,
+            )
+            cursor = self.db.execute(
+                """
+                UPDATE jobs
+                SET payload_json = ?
+                WHERE id = ?
+                  AND status = 'queued'
+                  AND payload_json = ?
+                """,
+                (payload_json, job_id, current.payload_json),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return self.get(job_id)
+
+    def mark_dispatch_accepted_if_current(
+        self,
+        job_id: int,
+        expected_payload_json: str,
+        *,
+        accepted_at: str,
+    ) -> Job | None:
+        _validate_job_transition("queued", "running")
+        with self.db.transaction():
+            current = self.get(job_id)
+            if (
+                current is None
+                or current.status != "queued"
+                or current.payload_json != expected_payload_json
+            ):
+                return None
+            payload_json = _payload_for_dispatch_accepted(
+                current.payload_json,
+                accepted_at=accepted_at,
+            )
+            cursor = self.db.execute(
+                """
+                UPDATE jobs
+                SET status = 'running',
+                    payload_json = ?
+                WHERE id = ?
+                  AND status = 'queued'
+                  AND payload_json = ?
+                """,
+                (payload_json, job_id, current.payload_json),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return self.get(job_id)
+
+    def return_dispatch_rejected_to_pending_if_current(
+        self,
+        job_id: int,
+        expected_payload_json: str,
+    ) -> Job | None:
+        _validate_job_transition("queued", "pending")
+        with self.db.transaction():
+            current = self.get(job_id)
+            if (
+                current is None
+                or current.status != "queued"
+                or current.payload_json != expected_payload_json
+                or not _dispatch_rejection_is_safe(current.payload_json)
+            ):
+                return None
+            payload_json = _payload_for_transition(
+                current.payload_json,
+                expected_status="queued",
+                new_status="pending",
+                claimed_at=None,
+            )
+            cursor = self.db.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    payload_json = ?
+                WHERE id = ?
+                  AND status = 'queued'
+                  AND payload_json = ?
+                """,
+                (payload_json, job_id, current.payload_json),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return self.get(job_id)
+
     @staticmethod
     def _from_row(row: Any) -> Job:
         return Job(
@@ -724,6 +1120,332 @@ class JobRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+
+def _same_job_semantics(existing: Job, job: Job, payload_json: str) -> bool:
+    return (
+        existing.workflow_id == job.workflow_id
+        and existing.schedule_id == job.schedule_id
+        and existing.character_id == job.character_id
+        and existing.job_type == job.job_type
+        and existing.priority == job.priority
+        and existing.scheduled_for == job.scheduled_for
+        and _semantic_payload_text(existing.payload_json)
+        == _semantic_payload_text(payload_json)
+    )
+
+
+def _validate_job_transition(expected_status: str, new_status: str) -> None:
+    allowed = SCHEDULER_JOB_STATUS_TRANSITIONS.get(expected_status, ())
+    if new_status not in allowed:
+        raise ValueError(
+            f"Illegal job status transition: {expected_status} -> {new_status}"
+        )
+
+
+def _payload_for_transition(
+    payload_json: str,
+    *,
+    expected_status: str,
+    new_status: str,
+    claimed_at: str | None,
+) -> str:
+    if expected_status == "pending" and new_status == "queued":
+        if claimed_at is None:
+            raise ValueError("claimed_at is required when claiming a job.")
+        return _with_claim_metadata(payload_json, new_status, claimed_at)
+    if new_status == "running":
+        return _with_existing_claim_status(payload_json, new_status)
+    if new_status == "pending":
+        return _without_active_scheduler_metadata(payload_json)
+    return _payload_text(_payload_object(payload_json))
+
+
+def _payload_for_recovery(
+    payload_json: str,
+    *,
+    previous_status: str,
+    new_status: str,
+    recovered_at: str,
+    reason: str,
+) -> str:
+    if new_status == "pending":
+        payload = _payload_object(_without_claim_metadata(payload_json))
+    else:
+        payload = _payload_object(payload_json)
+        payload = _without_claim_metadata_from_payload(payload)
+    scheduler = _scheduler_payload(payload)
+    scheduler[SCHEDULER_RECOVERY_KEY] = {
+        "previous_status": previous_status,
+        "new_status": new_status,
+        "recovered_at": recovered_at,
+        "reason": reason,
+    }
+    payload[SCHEDULER_PAYLOAD_KEY] = scheduler
+    return _payload_text(payload)
+
+
+def _stale_recovery_target(
+    status: str,
+    payload_json: str,
+    *,
+    malformed_metadata: bool = False,
+) -> tuple[str, str]:
+    if malformed_metadata:
+        return (
+            "failed",
+            "stale active claim has malformed scheduler metadata; replay is unsafe",
+        )
+    if status == "queued":
+        dispatch_state = _dispatch_recovery_state(payload_json)
+        if dispatch_state != "not_started":
+            return (
+                "failed",
+                "stale queued claim has ambiguous dispatch metadata; replay is unsafe",
+            )
+        return "pending", "stale queued claim expired; retry is safe before running"
+    if status == "running":
+        return (
+            "failed",
+            "stale running claim failed conservatively; replay safety is unknown",
+        )
+    raise ValueError(f"Unsupported stale recovery status: {status}")
+
+
+def _claim_started_at(payload_json: str) -> str | None:
+    claim = _claim_payload(payload_json)
+    value = claim.get("claimed_at")
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        parsed = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC).replace(microsecond=0).isoformat(timespec="seconds")
+
+
+def _payload_for_dispatching(
+    payload_json: str,
+    *,
+    dispatch_started_at: str,
+    dispatch_key: str,
+) -> str:
+    payload = _payload_object(payload_json)
+    scheduler = _scheduler_payload(payload)
+    scheduler[SCHEDULER_DISPATCH_KEY] = {
+        "phase": "dispatching",
+        "dispatch_started_at": require_text(
+            dispatch_started_at,
+            "dispatch_started_at",
+        ),
+        "dispatch_key": require_text(dispatch_key, "dispatch_key"),
+    }
+    payload[SCHEDULER_PAYLOAD_KEY] = scheduler
+    return _payload_text(payload)
+
+
+def _payload_for_dispatch_accepted(
+    payload_json: str,
+    *,
+    accepted_at: str,
+) -> str:
+    payload = _payload_object(payload_json)
+    scheduler = _scheduler_payload(payload)
+    dispatch = _dispatch_payload_from_scheduler(scheduler)
+    dispatch["phase"] = "accepted"
+    dispatch["accepted_at"] = require_text(accepted_at, "accepted_at")
+    scheduler[SCHEDULER_DISPATCH_KEY] = dispatch
+    payload[SCHEDULER_PAYLOAD_KEY] = scheduler
+    return _with_existing_claim_status(_payload_text(payload), "running")
+
+
+def _with_claim_metadata(
+    payload_json: str,
+    status: str,
+    claimed_at: str,
+) -> str:
+    payload = _payload_object(payload_json)
+    scheduler = _scheduler_payload(payload)
+    scheduler[SCHEDULER_CLAIM_KEY] = {
+        "claimed_at": require_text(claimed_at, "claimed_at"),
+        "status": status,
+    }
+    payload[SCHEDULER_PAYLOAD_KEY] = scheduler
+    return _payload_text(payload)
+
+
+def _with_existing_claim_status(payload_json: str, status: str) -> str:
+    payload = _payload_object(payload_json)
+    scheduler = _scheduler_payload(payload)
+    claim = scheduler.get(SCHEDULER_CLAIM_KEY)
+    if isinstance(claim, dict):
+        updated = dict(claim)
+        updated["status"] = status
+        scheduler[SCHEDULER_CLAIM_KEY] = updated
+        payload[SCHEDULER_PAYLOAD_KEY] = scheduler
+    return _payload_text(payload)
+
+
+def _without_claim_metadata(payload_json: str) -> str:
+    payload = _payload_object(payload_json)
+    payload = _without_claim_metadata_from_payload(payload)
+    return _payload_text(payload)
+
+
+def _without_active_scheduler_metadata(payload_json: str) -> str:
+    payload = _payload_object(payload_json)
+    payload = _without_claim_metadata_from_payload(payload)
+    payload = _without_dispatch_metadata_from_payload(payload)
+    return _payload_text(payload)
+
+
+def _without_claim_metadata_from_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    output = dict(payload)
+    scheduler_value = output.get(SCHEDULER_PAYLOAD_KEY)
+    if not isinstance(scheduler_value, dict):
+        return output
+    scheduler = dict(scheduler_value)
+    scheduler.pop(SCHEDULER_CLAIM_KEY, None)
+    if scheduler:
+        output[SCHEDULER_PAYLOAD_KEY] = scheduler
+    else:
+        output.pop(SCHEDULER_PAYLOAD_KEY, None)
+    return output
+
+
+def _without_dispatch_metadata_from_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    output = dict(payload)
+    scheduler_value = output.get(SCHEDULER_PAYLOAD_KEY)
+    if not isinstance(scheduler_value, dict):
+        return output
+    scheduler = dict(scheduler_value)
+    scheduler.pop(SCHEDULER_DISPATCH_KEY, None)
+    if scheduler:
+        output[SCHEDULER_PAYLOAD_KEY] = scheduler
+    else:
+        output.pop(SCHEDULER_PAYLOAD_KEY, None)
+    return output
+
+
+def _semantic_payload_text(payload_json: str) -> str:
+    payload = _without_claim_metadata_from_payload(_payload_object(payload_json))
+    payload = _without_dispatch_metadata_from_payload(payload)
+    scheduler_value = payload.get(SCHEDULER_PAYLOAD_KEY)
+    if isinstance(scheduler_value, dict):
+        scheduler = dict(scheduler_value)
+        scheduler.pop(SCHEDULER_RECOVERY_KEY, None)
+        if scheduler:
+            payload[SCHEDULER_PAYLOAD_KEY] = scheduler
+        else:
+            payload.pop(SCHEDULER_PAYLOAD_KEY, None)
+    return _payload_text(payload)
+
+
+def _claim_payload(payload_json: str) -> dict[str, Any]:
+    try:
+        payload = _payload_object(payload_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    scheduler = payload.get(SCHEDULER_PAYLOAD_KEY)
+    if not isinstance(scheduler, dict):
+        return {}
+    claim = scheduler.get(SCHEDULER_CLAIM_KEY)
+    return dict(claim) if isinstance(claim, dict) else {}
+
+
+def _dispatch_payload(payload_json: str) -> dict[str, Any]:
+    try:
+        payload = _payload_object(payload_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    scheduler = payload.get(SCHEDULER_PAYLOAD_KEY)
+    if not isinstance(scheduler, dict):
+        return {}
+    return _dispatch_payload_from_scheduler(scheduler)
+
+
+def _dispatch_payload_from_scheduler(scheduler: dict[str, Any]) -> dict[str, Any]:
+    dispatch = scheduler.get(SCHEDULER_DISPATCH_KEY)
+    return dict(dispatch) if isinstance(dispatch, dict) else {}
+
+
+def _dispatch_rejection_is_safe(payload_json: str) -> bool:
+    dispatch = _dispatch_payload(payload_json)
+    return dispatch.get("phase") == "dispatching" and bool(dispatch.get("dispatch_key"))
+
+
+def _dispatch_recovery_state(payload_json: str) -> str:
+    try:
+        payload = _payload_object(payload_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "malformed"
+    scheduler = payload.get(SCHEDULER_PAYLOAD_KEY)
+    if not isinstance(scheduler, dict):
+        return "malformed"
+    dispatch = scheduler.get(SCHEDULER_DISPATCH_KEY)
+    if dispatch is None:
+        return "not_started"
+    if not isinstance(dispatch, dict):
+        return "malformed"
+    phase = dispatch.get("phase")
+    if phase == "dispatching":
+        if isinstance(dispatch.get("dispatch_started_at"), str) and isinstance(
+            dispatch.get("dispatch_key"),
+            str,
+        ):
+            return "dispatching"
+        return "malformed"
+    if phase == "accepted":
+        if isinstance(dispatch.get("accepted_at"), str):
+            return "accepted"
+        return "malformed"
+    return "malformed"
+
+
+def _has_malformed_scheduler_metadata(payload_json: str) -> bool:
+    try:
+        payload = _payload_object(payload_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return True
+    scheduler = payload.get(SCHEDULER_PAYLOAD_KEY)
+    if scheduler is None:
+        return False
+    if not isinstance(scheduler, dict):
+        return True
+    claim = scheduler.get(SCHEDULER_CLAIM_KEY)
+    if claim is not None and not isinstance(claim, dict):
+        return True
+    if isinstance(claim, dict) and _claim_started_at(payload_json) is None:
+        return True
+    dispatch = scheduler.get(SCHEDULER_DISPATCH_KEY)
+    if dispatch is not None and _dispatch_recovery_state(payload_json) == "malformed":
+        return True
+    return False
+
+
+def _scheduler_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    scheduler = payload.get(SCHEDULER_PAYLOAD_KEY)
+    return dict(scheduler) if isinstance(scheduler, dict) else {}
+
+
+def _payload_object(payload_json: str) -> dict[str, Any]:
+    parsed = json.loads(payload_json or "{}")
+    if not isinstance(parsed, dict):
+        raise ValueError("payload_json must be a JSON object.")
+    return dict(parsed)
+
+
+def _payload_text(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True)
 
 
 class JobRunRepository:
