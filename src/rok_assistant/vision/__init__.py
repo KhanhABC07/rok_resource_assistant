@@ -7,6 +7,15 @@ from .image_matching import (
     find_template,
 )
 from .ocr import ResourceNode, VisionOcrModule
+from .scene_classification import (
+    SceneCandidateResult,
+    SceneClassificationRequest,
+    SceneClassificationResult,
+    SceneClassificationStatus,
+    SceneClassifier,
+    SceneDefinition,
+    SceneRule,
+)
 from .template_models import (
     BoundingBox,
     DetectionResult,
@@ -39,7 +48,14 @@ __all__ = [
     "ResolutionProfile",
     "ResourceNode",
     "ScaleRange",
+    "SceneCandidateResult",
+    "SceneClassificationRequest",
+    "SceneClassificationResult",
+    "SceneClassificationStatus",
+    "SceneClassifier",
     "SceneConstraints",
+    "SceneDefinition",
+    "SceneRule",
     "TemplateDefinition",
     "TemplateImageNormalizer",
     "TemplateMatchRequest",
