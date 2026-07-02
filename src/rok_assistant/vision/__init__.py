@@ -1,3 +1,11 @@
+from .evidence_capture import (
+    EvidenceCaptureRequest,
+    EvidenceCaptureResult,
+    EvidenceMetadata,
+    EvidenceReference,
+    EvidenceStore,
+    FileSystemEvidenceStore,
+)
 from .image_matching import (
     ImageNormalizationResult,
     NormalizedImage,
@@ -41,6 +49,12 @@ from .template_registry import (
 __all__ = [
     "BoundingBox",
     "DetectionResult",
+    "EvidenceCaptureRequest",
+    "EvidenceCaptureResult",
+    "EvidenceMetadata",
+    "EvidenceReference",
+    "EvidenceStore",
+    "FileSystemEvidenceStore",
     "ImageNormalizationResult",
     "MatchingMetadata",
     "NormalizedImage",
