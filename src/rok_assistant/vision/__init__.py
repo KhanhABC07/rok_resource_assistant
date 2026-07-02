@@ -1,4 +1,11 @@
-from .image_matching import find_template
+from .image_matching import (
+    ImageNormalizationResult,
+    NormalizedImage,
+    TemplateImageNormalizer,
+    TemplateMatchRequest,
+    TemplateScreenAnalyzer,
+    find_template,
+)
 from .ocr import ResourceNode, VisionOcrModule
 from .template_models import (
     BoundingBox,
@@ -25,18 +32,23 @@ from .template_registry import (
 __all__ = [
     "BoundingBox",
     "DetectionResult",
+    "ImageNormalizationResult",
     "MatchingMetadata",
+    "NormalizedImage",
     "RegionOfInterest",
     "ResolutionProfile",
     "ResourceNode",
     "ScaleRange",
     "SceneConstraints",
     "TemplateDefinition",
+    "TemplateImageNormalizer",
+    "TemplateMatchRequest",
     "TemplateNotFoundError",
     "TemplatePack",
     "TemplatePackValidationError",
     "TemplateRegistry",
     "TemplateRegistryError",
+    "TemplateScreenAnalyzer",
     "ValidationDiagnostic",
     "ValidationReport",
     "ValidationSeverity",
