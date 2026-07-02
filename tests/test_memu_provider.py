@@ -129,7 +129,7 @@ class MEmuEmulatorProviderTest(unittest.TestCase):
                 timeout_seconds=5,
             )
 
-        self.assertTrue(result.succeeded)
+        self.assertTrue(result.succeeded, repr(result))
         self.assertIn("\ufffdstdout", result.stdout)
         self.assertIn("\ufffdstderr", result.stderr)
 
@@ -142,8 +142,55 @@ class MEmuEmulatorProviderTest(unittest.TestCase):
                 timeout_seconds=0.2,
             )
 
-        self.assertEqual(CommandErrorCategory.TIMEOUT, result.error_category)
+        self.assertEqual(
+            CommandErrorCategory.TIMEOUT,
+            result.error_category,
+            repr(result),
+        )
         self.assertIsNone(result.exit_code)
+
+    def test_production_subprocesses_survive_after_windows_command_builder(self) -> None:
+        builder = MEmuCommandBuilder(r"C:\Program Files\Microvirt\MEmu")
+        command = builder.memuc("start", "-i", "5")
+        self.assertEqual(
+            r"C:\Program Files\Microvirt\MEmu\memuc.exe",
+            command.command[0],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            invalid_utf8 = temp_path / "invalid_utf8.py"
+            invalid_utf8.write_text(
+                "\n".join(
+                    [
+                        "import sys",
+                        "sys.stdout.buffer.write(b'\\xffstdout')",
+                        "sys.stderr.buffer.write(b'\\xfestderr')",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            sleep_script = temp_path / "sleep.py"
+            sleep_script.write_text("import time\ntime.sleep(5)\n", encoding="utf-8")
+
+            invalid_result = execute_legacy_command(
+                [sys.executable, str(invalid_utf8)],
+                timeout_seconds=5,
+            )
+            timeout_result = execute_legacy_command(
+                [sys.executable, str(sleep_script)],
+                timeout_seconds=0.2,
+            )
+
+        self.assertTrue(invalid_result.succeeded, repr(invalid_result))
+        self.assertIn("\ufffdstdout", invalid_result.stdout)
+        self.assertIn("\ufffdstderr", invalid_result.stderr)
+        self.assertEqual(
+            CommandErrorCategory.TIMEOUT,
+            timeout_result.error_category,
+            repr(timeout_result),
+        )
+        self.assertIsNone(timeout_result.exit_code)
 
     def test_discover_reports_malformed_list_output(self) -> None:
         def runner(

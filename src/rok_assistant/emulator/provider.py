@@ -584,6 +584,7 @@ def execute_built_command(
             completed = subprocess.run(
                 command,
                 cwd=built_command.cwd,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
