@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from typing import Callable
 
 from rok_assistant.db.models import ScheduledTask
 from rok_assistant.db.repositories import InstanceRepository, SettingsRepository, TaskRepository
 from rok_assistant.emulator import EmulatorManager
+from rok_assistant.scheduler.service import SchedulerService
 from rok_assistant.scheduler.worker_pool import WorkerPool
 
 
@@ -22,16 +24,19 @@ class Scheduler:
         instance_repository: InstanceRepository | None = None,
         emulator_manager: EmulatorManager | None = None,
         settings: SettingsRepository | None = None,
-    ):
+        v2_service: SchedulerService | None = None,
+    ) -> None:
         self.tasks = task_repository
         self.worker_pool = worker_pool
-        self.poll_interval_seconds = max(1, poll_interval_seconds)
+        self.poll_interval_seconds = _validate_poll_interval(poll_interval_seconds)
         self.instances = instance_repository
         self.emulator_manager = emulator_manager
         self.settings = settings
+        self.v2_service = v2_service
         self.logger = logging.getLogger(self.__class__.__name__)
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
+        self._state_lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self._callbacks: list[SchedulerCallback] = []
 
@@ -39,25 +44,39 @@ class Scheduler:
         self._callbacks.append(callback)
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self.worker_pool.start()
-        self._thread = threading.Thread(target=self._run_loop, name="rok-scheduler", daemon=True)
-        self._thread.start()
+        with self._state_lock:
+            if self._thread and self._thread.is_alive():
+                self.logger.info("Scheduler start ignored; already running.")
+                return
+            self._stop_event.clear()
+            self._wake_event.clear()
+            self.worker_pool.start()
+            self._thread = threading.Thread(
+                target=self._run_loop,
+                name="rok-scheduler",
+                daemon=True,
+            )
+            self._thread.start()
         self.logger.info("Scheduler started.")
 
     def stop(self) -> None:
-        self._stop_event.set()
-        self._wake_event.set()
-        if self._thread:
-            self._thread.join(timeout=3)
-            self._thread = None
+        with self._state_lock:
+            thread = self._thread
+            self._stop_event.set()
+            self._wake_event.set()
+        if thread:
+            thread.join(timeout=3)
+        with self._state_lock:
+            if self._thread is thread and (thread is None or not thread.is_alive()):
+                self._thread = None
         self.worker_pool.stop()
         self.logger.info("Scheduler stopped.")
 
     def wake(self) -> None:
         self._wake_event.set()
+        if self.v2_service is not None:
+            self.v2_service.wake()
+        self.logger.info("Scheduler wake requested.")
 
     @property
     def is_running(self) -> bool:
@@ -69,9 +88,23 @@ class Scheduler:
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
-            self.dispatch_due_tasks()
+            try:
+                self.run_once()
+            except Exception as exc:
+                self.logger.error(
+                    "Scheduler iteration failed: %s %s",
+                    exc.__class__.__name__,
+                    _safe_message(exc),
+                )
+            if self._stop_event.is_set():
+                break
             self._wake_event.wait(self.poll_interval_seconds)
             self._wake_event.clear()
+
+    def run_once(self) -> None:
+        if self.v2_service is not None:
+            self.v2_service.run_once()
+        self.dispatch_due_tasks()
 
     def dispatch_due_tasks(self) -> None:
         capacity = max(1, self.worker_pool.max_workers * 2)
@@ -115,3 +148,19 @@ class Scheduler:
     def _emit(self, status: str, task: ScheduledTask) -> None:
         for callback in list(self._callbacks):
             callback(status, task)
+
+
+def _validate_poll_interval(value: int | float) -> float:
+    if isinstance(value, bool):
+        raise ValueError("poll_interval_seconds must be a finite positive number.")
+    interval = float(value)
+    if not math.isfinite(interval) or interval <= 0:
+        raise ValueError("poll_interval_seconds must be a finite positive number.")
+    return interval
+
+
+def _safe_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if len(message) > 300:
+        return message[:297] + "..."
+    return message or exc.__class__.__name__
