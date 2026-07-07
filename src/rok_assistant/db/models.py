@@ -53,6 +53,8 @@ RUN_STATUSES = (
 )
 INCIDENT_SEVERITIES = ("info", "warning", "error", "critical")
 INCIDENT_STATUSES = ("open", "acknowledged", "resolved")
+RECOVERY_ATTEMPT_STATES = ("started", "succeeded", "failed", "skipped")
+CIRCUIT_BREAKER_STATUSES = ("open", "closed")
 
 
 def utc_now_iso() -> str:
@@ -358,6 +360,38 @@ class Incident:
     screenshot_path: str = ""
     created_at: str = ""
     resolved_at: str | None = None
+    updated_at: str = ""
+
+
+@dataclass
+class RecoveryAttempt:
+    id: int | None = None
+    attempt_key: str = ""
+    instance_id: int | None = None
+    job_run_id: int | None = None
+    phase: str = ""
+    state: str = "started"
+    started_at: str = ""
+    finished_at: str | None = None
+    success: bool = False
+    reason: str = ""
+    screenshot_path: str = ""
+    metadata_json: str = "{}"
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class InstanceCircuitBreaker:
+    id: int | None = None
+    instance_id: int | None = None
+    status: str = "open"
+    opened_at: str = ""
+    closed_at: str | None = None
+    reason: str = ""
+    incident_id: int | None = None
+    metadata_json: str = "{}"
+    created_at: str = ""
     updated_at: str = ""
 
 

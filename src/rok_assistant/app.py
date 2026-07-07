@@ -10,8 +10,11 @@ from rok_assistant.db import (
     AutomationTaskRepository,
     CharacterRepository,
     Database,
+    IncidentRepository,
+    InstanceCircuitBreakerRepository,
     InstanceRepository,
     MarchRepository,
+    RecoveryAttemptRepository,
     SettingsRepository,
     TaskRunHistoryRepository,
     TaskRepository,
@@ -43,6 +46,9 @@ class AppContext:
     tasks: TaskRepository
     automation_tasks: AutomationTaskRepository
     task_run_history: TaskRunHistoryRepository
+    incidents: IncidentRepository
+    recovery_attempts: RecoveryAttemptRepository
+    circuit_breakers: InstanceCircuitBreakerRepository
     memu_manager: MEmuManager
     memu_adb_manager: MEmuAdbManager
     emulator_manager: EmulatorManager
@@ -72,6 +78,9 @@ class AppContext:
         tasks = TaskRepository(db)
         automation_tasks = AutomationTaskRepository(db)
         task_run_history = TaskRunHistoryRepository(db)
+        incidents = IncidentRepository(db)
+        recovery_attempts = RecoveryAttemptRepository(db)
+        circuit_breakers = InstanceCircuitBreakerRepository(db)
         settings.set_defaults(
             {
                 "scheduler.max_workers": config.get("scheduler.max_workers", 5),
@@ -86,6 +95,19 @@ class AppContext:
                 ),
                 "scheduler.poll_interval_seconds": config.get(
                     "scheduler.poll_interval_seconds", 5
+                ),
+                "watchdog.game_package": config.get(
+                    "watchdog.game_package", "com.lilithgame.roc.gp"
+                ),
+                "watchdog.game_activity": config.get(
+                    "watchdog.game_activity",
+                    "com.lilithgame.roc.gp/.UnityPlayerActivity",
+                ),
+                "watchdog.same_screen_timeout_seconds": config.get(
+                    "watchdog.same_screen_timeout_seconds", 120
+                ),
+                "watchdog.same_screen_max_observations": config.get(
+                    "watchdog.same_screen_max_observations", 3
                 ),
                 "emulator.memu_install_path": config.get(
                     "emulator.memu_install_path", DEFAULT_MEMU_INSTALL_PATH
@@ -144,6 +166,7 @@ class AppContext:
             instance_repository=instances,
             emulator_manager=emulator_manager,
             settings=settings,
+            circuit_breakers=circuit_breakers,
         )
         return cls(
             config=config,
@@ -155,6 +178,9 @@ class AppContext:
             tasks=tasks,
             automation_tasks=automation_tasks,
             task_run_history=task_run_history,
+            incidents=incidents,
+            recovery_attempts=recovery_attempts,
+            circuit_breakers=circuit_breakers,
             memu_manager=memu_manager,
             memu_adb_manager=memu_adb_manager,
             emulator_manager=emulator_manager,

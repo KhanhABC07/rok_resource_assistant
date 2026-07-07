@@ -6,7 +6,12 @@ import threading
 from typing import Callable
 
 from rok_assistant.db.models import ScheduledTask
-from rok_assistant.db.repositories import InstanceRepository, SettingsRepository, TaskRepository
+from rok_assistant.db.repositories import (
+    InstanceCircuitBreakerRepository,
+    InstanceRepository,
+    SettingsRepository,
+    TaskRepository,
+)
 from rok_assistant.emulator import EmulatorManager
 from rok_assistant.scheduler.service import SchedulerService
 from rok_assistant.scheduler.worker_pool import WorkerPool
@@ -25,6 +30,7 @@ class Scheduler:
         emulator_manager: EmulatorManager | None = None,
         settings: SettingsRepository | None = None,
         v2_service: SchedulerService | None = None,
+        circuit_breakers: InstanceCircuitBreakerRepository | None = None,
     ) -> None:
         self.tasks = task_repository
         self.worker_pool = worker_pool
@@ -33,6 +39,7 @@ class Scheduler:
         self.emulator_manager = emulator_manager
         self.settings = settings
         self.v2_service = v2_service
+        self.circuit_breakers = circuit_breakers
         self.logger = logging.getLogger(self.__class__.__name__)
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
@@ -128,6 +135,13 @@ class Scheduler:
         instance = self.instances.get(task.instance_id)
         if instance is None or instance.id is None:
             return True
+        if self.circuit_breakers is not None and self.circuit_breakers.is_open(instance.id):
+            self.logger.warning(
+                "[Recovery] Instance %s circuit breaker is open; task %s remains pending",
+                instance.name,
+                task.id,
+            )
+            return False
         if self.emulator_manager.is_running(instance):
             return True
         if instance.id in planned_launches:

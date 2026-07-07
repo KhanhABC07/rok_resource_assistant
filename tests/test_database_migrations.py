@@ -38,8 +38,8 @@ class DatabaseMigrationTest(unittest.TestCase):
                     "SELECT name FROM sqlite_schema WHERE type = 'table'"
                 )
             }
-            self.assertLessEqual(migrations.DATA_V2_TABLES, tables)
-            self.assertEqual([1, 2], migration_versions(db))
+            self.assertLessEqual(migrations.DATA_V2_TABLES | migrations.RECOVERY_V3_TABLES, tables)
+            self.assertEqual([1, 2, 3], migration_versions(db))
             self.assertEqual(1, db.fetch_one("PRAGMA foreign_keys")["foreign_keys"])
             self.assertEqual("wal", db.fetch_one("PRAGMA journal_mode")["journal_mode"])
             db.close()
@@ -54,13 +54,13 @@ class DatabaseMigrationTest(unittest.TestCase):
 
             db = Database(path)
             db.initialize()
-            self.assertEqual([1, 2], migration_versions(db))
+            self.assertEqual([1, 2, 3], migration_versions(db))
             db.close()
             first_backups = list(Path(temp_dir).glob("repeat.backup.*.sqlite3"))
 
             reopened = Database(path)
             reopened.initialize()
-            self.assertEqual([1, 2], migration_versions(reopened))
+            self.assertEqual([1, 2, 3], migration_versions(reopened))
             reopened.close()
             second_backups = list(Path(temp_dir).glob("repeat.backup.*.sqlite3"))
             self.assertEqual(first_backups, second_backups)
@@ -121,7 +121,7 @@ class DatabaseMigrationTest(unittest.TestCase):
             )
             self.assertEqual("Account A", character["account_name"])
             self.assertEqual(account["id"], character["game_account_id"])
-            self.assertEqual([1, 2], migration_versions(db))
+            self.assertEqual([1, 2, 3], migration_versions(db))
             db.close()
 
     def test_existing_database_migrates_memu_columns(self) -> None:

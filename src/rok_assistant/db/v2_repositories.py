@@ -7,18 +7,22 @@ from typing import Any
 
 from .database import Database
 from .models import (
+    CIRCUIT_BREAKER_STATUSES,
     INCIDENT_SEVERITIES,
     INCIDENT_STATUSES,
     INSTANCE_SESSION_STATUSES,
     JOB_STATUSES,
+    RECOVERY_ATTEMPT_STATES,
     RUN_STATUSES,
     AuditLog,
     AutomationProfile,
     FeatureConfig,
     Incident,
+    InstanceCircuitBreaker,
     InstanceSession,
     Job,
     JobRun,
+    RecoveryAttempt,
     ScheduleDefinition,
     ScreenObservation,
     StepRun,
@@ -2100,6 +2104,205 @@ class IncidentRepository:
             screenshot_path=row["screenshot_path"],
             created_at=row["created_at"],
             resolved_at=row["resolved_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+class RecoveryAttemptRepository:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def save(self, attempt: RecoveryAttempt) -> int:
+        attempt_key = require_text(attempt.attempt_key, "attempt_key")
+        phase = require_text(attempt.phase, "phase")
+        state = validate_choice(attempt.state, RECOVERY_ATTEMPT_STATES, "state")
+        started_at = attempt.started_at or utc_now_iso()
+        metadata_json = json_object_text(attempt.metadata_json, "metadata_json")
+        with self.db.transaction():
+            if attempt.id is None:
+                self.db.execute(
+                    """
+                    INSERT INTO recovery_attempts(
+                        attempt_key, instance_id, job_run_id, phase, state,
+                        started_at, finished_at, success, reason, screenshot_path,
+                        metadata_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(attempt_key) DO UPDATE SET
+                        instance_id = excluded.instance_id,
+                        job_run_id = excluded.job_run_id,
+                        phase = excluded.phase,
+                        state = excluded.state,
+                        started_at = excluded.started_at,
+                        finished_at = excluded.finished_at,
+                        success = excluded.success,
+                        reason = excluded.reason,
+                        screenshot_path = excluded.screenshot_path,
+                        metadata_json = excluded.metadata_json
+                    """,
+                    (
+                        attempt_key,
+                        attempt.instance_id,
+                        attempt.job_run_id,
+                        phase,
+                        state,
+                        started_at,
+                        attempt.finished_at,
+                        int(attempt.success),
+                        attempt.reason.strip(),
+                        attempt.screenshot_path.strip(),
+                        metadata_json,
+                    ),
+                )
+                return row_id(self.get_by_key(attempt_key))
+
+            self.db.execute(
+                """
+                UPDATE recovery_attempts
+                SET attempt_key = ?,
+                    instance_id = ?,
+                    job_run_id = ?,
+                    phase = ?,
+                    state = ?,
+                    started_at = ?,
+                    finished_at = ?,
+                    success = ?,
+                    reason = ?,
+                    screenshot_path = ?,
+                    metadata_json = ?
+                WHERE id = ?
+                """,
+                (
+                    attempt_key,
+                    attempt.instance_id,
+                    attempt.job_run_id,
+                    phase,
+                    state,
+                    started_at,
+                    attempt.finished_at,
+                    int(attempt.success),
+                    attempt.reason.strip(),
+                    attempt.screenshot_path.strip(),
+                    metadata_json,
+                    attempt.id,
+                ),
+            )
+            return attempt.id
+
+    def get_by_key(self, attempt_key: str) -> RecoveryAttempt | None:
+        row = self.db.fetch_one(
+            "SELECT * FROM recovery_attempts WHERE attempt_key = ?",
+            (require_text(attempt_key, "attempt_key"),),
+        )
+        return self._from_row(row) if row else None
+
+    def list_for_instance(self, instance_id: int, limit: int = 200) -> list[RecoveryAttempt]:
+        rows = self.db.fetch_all(
+            """
+            SELECT *
+            FROM recovery_attempts
+            WHERE instance_id = ?
+            ORDER BY started_at DESC, id DESC
+            LIMIT ?
+            """,
+            (instance_id, limit),
+        )
+        return [self._from_row(row) for row in rows]
+
+    @staticmethod
+    def _from_row(row: Any) -> RecoveryAttempt:
+        return RecoveryAttempt(
+            id=row["id"],
+            attempt_key=row["attempt_key"],
+            instance_id=row["instance_id"],
+            job_run_id=row["job_run_id"],
+            phase=row["phase"],
+            state=row["state"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            success=row_bool(row["success"]),
+            reason=row["reason"],
+            screenshot_path=row["screenshot_path"],
+            metadata_json=row["metadata_json"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+class InstanceCircuitBreakerRepository:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def open(
+        self,
+        *,
+        instance_id: int,
+        reason: str,
+        incident_id: int | None = None,
+        metadata_json: str = "{}",
+        opened_at: str | None = None,
+    ) -> int:
+        instance_id = require_id(instance_id, "instance_id")
+        metadata_json = json_object_text(metadata_json, "metadata_json")
+        opened_at = opened_at or utc_now_iso()
+        with self.db.transaction():
+            self.db.execute(
+                """
+                INSERT INTO instance_circuit_breakers(
+                    instance_id, status, opened_at, closed_at, reason,
+                    incident_id, metadata_json
+                )
+                VALUES (?, 'open', ?, NULL, ?, ?, ?)
+                ON CONFLICT(instance_id) DO UPDATE SET
+                    status = 'open',
+                    opened_at = excluded.opened_at,
+                    closed_at = NULL,
+                    reason = excluded.reason,
+                    incident_id = excluded.incident_id,
+                    metadata_json = excluded.metadata_json
+                """,
+                (instance_id, opened_at, reason.strip(), incident_id, metadata_json),
+            )
+            row = self.get_for_instance(instance_id)
+            return row_id(row)
+
+    def close(self, *, instance_id: int, closed_at: str | None = None) -> None:
+        instance_id = require_id(instance_id, "instance_id")
+        with self.db.transaction():
+            self.db.execute(
+                """
+                UPDATE instance_circuit_breakers
+                SET status = 'closed',
+                    closed_at = ?,
+                    reason = ''
+                WHERE instance_id = ?
+                """,
+                (closed_at or utc_now_iso(), instance_id),
+            )
+
+    def is_open(self, instance_id: int) -> bool:
+        breaker = self.get_for_instance(instance_id)
+        return breaker is not None and breaker.status == "open"
+
+    def get_for_instance(self, instance_id: int) -> InstanceCircuitBreaker | None:
+        row = self.db.fetch_one(
+            "SELECT * FROM instance_circuit_breakers WHERE instance_id = ?",
+            (require_id(instance_id, "instance_id"),),
+        )
+        return self._from_row(row) if row else None
+
+    @staticmethod
+    def _from_row(row: Any) -> InstanceCircuitBreaker:
+        return InstanceCircuitBreaker(
+            id=row["id"],
+            instance_id=row["instance_id"],
+            status=validate_choice(row["status"], CIRCUIT_BREAKER_STATUSES, "status"),
+            opened_at=row["opened_at"],
+            closed_at=row["closed_at"],
+            reason=row["reason"],
+            incident_id=row["incident_id"],
+            metadata_json=row["metadata_json"],
+            created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
 

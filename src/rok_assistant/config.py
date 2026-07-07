@@ -20,6 +20,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "pre_launch_minutes": 2,
         "poll_interval_seconds": 5,
     },
+    "watchdog": {
+        "game_package": "com.lilithgame.roc.gp",
+        "game_activity": "com.lilithgame.roc.gp/.UnityPlayerActivity",
+        "same_screen_timeout_seconds": 120,
+        "same_screen_max_observations": 3,
+        "phase_timeouts": {
+            "reconnect_adb": 15,
+            "send_back": 5,
+            "normalize_home": 5,
+            "relaunch_game": 30,
+            "restart_emulator": 120,
+            "open_incident": 5,
+        },
+    },
     "gathering": {
         "preferred_resource_levels": [8, 7, 6],
         "minimum_resource_level": 6,
