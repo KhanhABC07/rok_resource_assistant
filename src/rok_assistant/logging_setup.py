@@ -4,6 +4,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from .security import RedactingLogFilter
+
 
 def configure_logging(log_file: Path, level_name: str = "INFO") -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -11,7 +13,9 @@ def configure_logging(log_file: Path, level_name: str = "INFO") -> None:
 
     root = logging.getLogger()
     root.setLevel(level)
-    root.handlers.clear()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+        handler.close()
 
     formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -30,6 +34,10 @@ def configure_logging(log_file: Path, level_name: str = "INFO") -> None:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.setLevel(level)
+
+    redacting_filter = RedactingLogFilter()
+    file_handler.addFilter(redacting_filter)
+    console_handler.addFilter(redacting_filter)
 
     root.addHandler(file_handler)
     root.addHandler(console_handler)

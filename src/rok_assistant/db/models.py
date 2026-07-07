@@ -168,6 +168,7 @@ class GameAccount:
     display_name: str = ""
     provider: str = ""
     external_id: str = ""
+    secret_ref: str = ""
     enabled: bool = True
     metadata_json: str = "{}"
     created_at: str = ""

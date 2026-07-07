@@ -39,7 +39,7 @@ class DatabaseMigrationTest(unittest.TestCase):
                 )
             }
             self.assertLessEqual(migrations.DATA_V2_TABLES | migrations.RECOVERY_V3_TABLES, tables)
-            self.assertEqual([1, 2, 3], migration_versions(db))
+            self.assertEqual([1, 2, 3, 4], migration_versions(db))
             self.assertEqual(1, db.fetch_one("PRAGMA foreign_keys")["foreign_keys"])
             self.assertEqual("wal", db.fetch_one("PRAGMA journal_mode")["journal_mode"])
             db.close()
@@ -54,13 +54,13 @@ class DatabaseMigrationTest(unittest.TestCase):
 
             db = Database(path)
             db.initialize()
-            self.assertEqual([1, 2, 3], migration_versions(db))
+            self.assertEqual([1, 2, 3, 4], migration_versions(db))
             db.close()
             first_backups = list(Path(temp_dir).glob("repeat.backup.*.sqlite3"))
 
             reopened = Database(path)
             reopened.initialize()
-            self.assertEqual([1, 2, 3], migration_versions(reopened))
+            self.assertEqual([1, 2, 3, 4], migration_versions(reopened))
             reopened.close()
             second_backups = list(Path(temp_dir).glob("repeat.backup.*.sqlite3"))
             self.assertEqual(first_backups, second_backups)
@@ -121,8 +121,74 @@ class DatabaseMigrationTest(unittest.TestCase):
             )
             self.assertEqual("Account A", character["account_name"])
             self.assertEqual(account["id"], character["game_account_id"])
-            self.assertEqual([1, 2, 3], migration_versions(db))
+            self.assertEqual([1, 2, 3, 4], migration_versions(db))
             db.close()
+
+    def test_existing_v3_database_migrates_game_account_secret_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "v3_accounts.sqlite3"
+            db = Database(path)
+            db.initialize()
+            db.close()
+
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("DELETE FROM schema_migrations WHERE version = 4")
+                connection.execute("ALTER TABLE game_accounts RENAME TO game_accounts_v4")
+                connection.execute(
+                    """
+                    CREATE TABLE game_accounts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        account_name TEXT NOT NULL COLLATE NOCASE
+                            CHECK(length(trim(account_name)) > 0),
+                        display_name TEXT NOT NULL DEFAULT '',
+                        provider TEXT NOT NULL DEFAULT '',
+                        external_id TEXT NOT NULL DEFAULT '',
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(account_name)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO game_accounts(
+                        id, account_name, display_name, provider, external_id,
+                        enabled, metadata_json, created_at, updated_at
+                    )
+                    SELECT
+                        id, account_name, display_name, provider, external_id,
+                        enabled, metadata_json, created_at, updated_at
+                    FROM game_accounts_v4
+                    """
+                )
+                connection.execute("DROP TABLE game_accounts_v4")
+                connection.execute(
+                    """
+                    INSERT INTO game_accounts(account_name, display_name)
+                    VALUES ('Account A', 'Account A')
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            migrated = Database(path)
+            migrated.initialize()
+            columns = {
+                row["name"]
+                for row in migrated.fetch_all("PRAGMA table_info(game_accounts)")
+            }
+            account = migrated.fetch_one(
+                "SELECT secret_ref FROM game_accounts WHERE account_name = ?",
+                ("Account A",),
+            )
+            self.assertIn("secret_ref", columns)
+            self.assertEqual("", account["secret_ref"])
+            self.assertEqual([1, 2, 3, 4], migration_versions(migrated))
+            migrated.close()
 
     def test_existing_database_migrates_memu_columns(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

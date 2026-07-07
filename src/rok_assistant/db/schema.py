@@ -1,4 +1,4 @@
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS game_accounts (
     display_name TEXT NOT NULL DEFAULT '',
     provider TEXT NOT NULL DEFAULT '',
     external_id TEXT NOT NULL DEFAULT '',
+    secret_ref TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
