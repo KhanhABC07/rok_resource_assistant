@@ -1,4 +1,4 @@
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -368,6 +368,45 @@ CREATE TABLE IF NOT EXISTS incidents (
     UNIQUE(incident_key)
 );
 
+CREATE TABLE IF NOT EXISTS recovery_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt_key TEXT NOT NULL COLLATE NOCASE
+        CHECK(length(trim(attempt_key)) > 0),
+    instance_id INTEGER,
+    job_run_id INTEGER,
+    phase TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'started'
+        CHECK(state IN ('started', 'succeeded', 'failed', 'skipped')),
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    success INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    screenshot_path TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(instance_id) REFERENCES instances(id) ON DELETE SET NULL,
+    FOREIGN KEY(job_run_id) REFERENCES job_runs(id) ON DELETE SET NULL,
+    UNIQUE(attempt_key)
+);
+
+CREATE TABLE IF NOT EXISTS instance_circuit_breakers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK(status IN ('open', 'closed')),
+    opened_at TEXT NOT NULL,
+    closed_at TEXT,
+    reason TEXT NOT NULL DEFAULT '',
+    incident_id INTEGER,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(instance_id) REFERENCES instances(id) ON DELETE CASCADE,
+    FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE SET NULL,
+    UNIQUE(instance_id)
+);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     audit_key TEXT NOT NULL COLLATE NOCASE
@@ -444,6 +483,15 @@ CREATE INDEX IF NOT EXISTS idx_screen_observations_time
 
 CREATE INDEX IF NOT EXISTS idx_incidents_status
     ON incidents(status, severity, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_attempts_instance
+    ON recovery_attempts(instance_id, started_at);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_attempts_job_run
+    ON recovery_attempts(job_run_id, started_at);
+
+CREATE INDEX IF NOT EXISTS idx_instance_circuit_breakers_status
+    ON instance_circuit_breakers(status, opened_at);
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_entity
     ON audit_logs(entity_type, entity_id, occurred_at);
@@ -560,5 +608,17 @@ CREATE TRIGGER IF NOT EXISTS trg_incidents_updated
 AFTER UPDATE ON incidents
 BEGIN
     UPDATE incidents SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_recovery_attempts_updated
+AFTER UPDATE ON recovery_attempts
+BEGIN
+    UPDATE recovery_attempts SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_instance_circuit_breakers_updated
+AFTER UPDATE ON instance_circuit_breakers
+BEGIN
+    UPDATE instance_circuit_breakers SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
 """

@@ -224,6 +224,11 @@ DATA_V2_TABLES = {
     "audit_logs",
 }
 
+RECOVERY_V3_TABLES = {
+    "recovery_attempts",
+    "instance_circuit_breakers",
+}
+
 
 def latest_schema_version() -> int:
     return max(migration.version for migration in MIGRATIONS)
@@ -318,6 +323,47 @@ def validate_data_v2_schema(connection: sqlite3.Connection) -> None:
     _require_columns(connection, "game_accounts", {"account_name", "metadata_json"})
     _require_columns(connection, "jobs", {"idempotency_key", "status", "scheduled_for"})
     _require_columns(connection, "audit_logs", {"audit_key", "details_json"})
+
+
+def migrate_recovery_v3_schema(connection: sqlite3.Connection) -> None:
+    execute_script(connection, SCHEMA_SQL)
+
+
+def validate_recovery_v3_schema(connection: sqlite3.Connection) -> None:
+    _require_tables(
+        connection,
+        DATA_V2_TABLES | RECOVERY_V3_TABLES | LEGACY_TABLES | {"schema_migrations"},
+    )
+    _require_columns(
+        connection,
+        "recovery_attempts",
+        {
+            "attempt_key",
+            "instance_id",
+            "job_run_id",
+            "phase",
+            "state",
+            "started_at",
+            "finished_at",
+            "success",
+            "reason",
+            "screenshot_path",
+            "metadata_json",
+        },
+    )
+    _require_columns(
+        connection,
+        "instance_circuit_breakers",
+        {
+            "instance_id",
+            "status",
+            "opened_at",
+            "closed_at",
+            "reason",
+            "incident_id",
+            "metadata_json",
+        },
+    )
 
 
 def ensure_legacy_instance_columns(connection: sqlite3.Connection) -> None:
@@ -600,4 +646,5 @@ def migrate_automation_task_step_actions(connection: sqlite3.Connection) -> None
 MIGRATIONS = (
     Migration(1, "legacy schema compatibility", migrate_legacy_schema, validate_legacy_schema),
     Migration(2, "data v2 schema", migrate_data_v2_schema, validate_data_v2_schema),
+    Migration(3, "recovery watchdog schema", migrate_recovery_v3_schema, validate_recovery_v3_schema),
 )
