@@ -379,6 +379,28 @@ def validate_security_v4_schema(connection: sqlite3.Connection) -> None:
     _require_columns(connection, "game_accounts", {"secret_ref"})
 
 
+def migrate_character_verification_v5_schema(connection: sqlite3.Connection) -> None:
+    ensure_character_verification_columns(connection)
+    execute_script(connection, SCHEMA_SQL)
+
+
+def validate_character_verification_v5_schema(connection: sqlite3.Connection) -> None:
+    _require_tables(
+        connection,
+        DATA_V2_TABLES | RECOVERY_V3_TABLES | LEGACY_TABLES | {"schema_migrations"},
+    )
+    _require_columns(
+        connection,
+        "characters",
+        {
+            "character_slot",
+            "display_fingerprint",
+            "kingdom_id",
+            "verification_metadata_json",
+        },
+    )
+
+
 def ensure_legacy_instance_columns(connection: sqlite3.Connection) -> None:
     if not table_exists(connection, "instances"):
         return
@@ -448,6 +470,127 @@ def ensure_game_account_secret_ref(connection: sqlite3.Connection) -> None:
             ADD COLUMN secret_ref TEXT NOT NULL DEFAULT ''
             """
         )
+
+
+def ensure_character_verification_columns(connection: sqlite3.Connection) -> None:
+    if not table_exists(connection, "characters"):
+        return
+    columns = table_columns(connection, "characters")
+    required = {
+        "character_slot",
+        "display_fingerprint",
+        "kingdom_id",
+        "verification_metadata_json",
+    }
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_schema
+        WHERE type = 'table' AND name = 'characters'
+        """
+    ).fetchone()
+    create_sql = row["sql"] if row else ""
+    if required.issubset(columns) and "UNIQUE(instance_id, name)" not in create_sql:
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_characters_account_slot
+                ON characters(game_account_id, character_slot)
+                WHERE game_account_id IS NOT NULL AND character_slot IS NOT NULL
+            """
+        )
+        return
+
+    character_slot_expr = (
+        "CASE WHEN character_slot BETWEEN 1 AND 12 THEN character_slot ELSE NULL END"
+        if "character_slot" in columns
+        else "NULL"
+    )
+    display_fingerprint_expr = (
+        "COALESCE(display_fingerprint, '')"
+        if "display_fingerprint" in columns
+        else "''"
+    )
+    kingdom_id_expr = "kingdom_id" if "kingdom_id" in columns else "NULL"
+    verification_metadata_expr = (
+        "COALESCE(verification_metadata_json, '{}')"
+        if "verification_metadata_json" in columns
+        else "'{}'"
+    )
+
+    for statement in (
+        "DROP TRIGGER IF EXISTS trg_characters_updated",
+        "DROP INDEX IF EXISTS idx_characters_game_account",
+        "DROP INDEX IF EXISTS idx_characters_account_slot",
+        "DROP TABLE IF EXISTS characters_new",
+        """
+        CREATE TABLE characters_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            instance_id INTEGER NOT NULL,
+            account_name TEXT NOT NULL DEFAULT '',
+            character_slot INTEGER CHECK(character_slot BETWEEN 1 AND 12),
+            display_fingerprint TEXT NOT NULL DEFAULT '',
+            kingdom_id INTEGER,
+            verification_metadata_json TEXT NOT NULL DEFAULT '{}',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            alliance_help_enabled INTEGER NOT NULL DEFAULT 1,
+            alliance_donate_enabled INTEGER NOT NULL DEFAULT 1,
+            gift_collection_enabled INTEGER NOT NULL DEFAULT 1,
+            last_switch_at TEXT,
+            game_account_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(instance_id) REFERENCES instances(id) ON DELETE CASCADE,
+            FOREIGN KEY(game_account_id) REFERENCES game_accounts(id) ON DELETE SET NULL
+        )
+        """,
+        f"""
+        INSERT INTO characters_new(
+            id, name, instance_id, account_name, character_slot,
+            display_fingerprint, kingdom_id, verification_metadata_json,
+            enabled, alliance_help_enabled, alliance_donate_enabled,
+            gift_collection_enabled, last_switch_at, game_account_id,
+            created_at, updated_at
+        )
+        SELECT
+            id,
+            name,
+            instance_id,
+            account_name,
+            {character_slot_expr},
+            {display_fingerprint_expr},
+            {kingdom_id_expr},
+            {verification_metadata_expr},
+            enabled,
+            alliance_help_enabled,
+            alliance_donate_enabled,
+            gift_collection_enabled,
+            last_switch_at,
+            game_account_id,
+            created_at,
+            updated_at
+        FROM characters
+        """,
+        "DROP TABLE characters",
+        "ALTER TABLE characters_new RENAME TO characters",
+        """
+        CREATE INDEX IF NOT EXISTS idx_characters_game_account
+            ON characters(game_account_id)
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_characters_account_slot
+            ON characters(game_account_id, character_slot)
+            WHERE game_account_id IS NOT NULL AND character_slot IS NOT NULL
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_characters_updated
+        AFTER UPDATE ON characters
+        BEGIN
+            UPDATE characters SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+        END
+        """,
+    ):
+        connection.execute(statement)
 
 
 def migrate_character_accounts(connection: sqlite3.Connection) -> None:
@@ -674,4 +817,10 @@ MIGRATIONS = (
     Migration(2, "data v2 schema", migrate_data_v2_schema, validate_data_v2_schema),
     Migration(3, "recovery watchdog schema", migrate_recovery_v3_schema, validate_recovery_v3_schema),
     Migration(4, "credential references", migrate_security_v4_schema, validate_security_v4_schema),
+    Migration(
+        5,
+        "character verification metadata",
+        migrate_character_verification_v5_schema,
+        validate_character_verification_v5_schema,
+    ),
 )
