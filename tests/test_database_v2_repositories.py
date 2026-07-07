@@ -95,9 +95,18 @@ class DataV2RepositoryTest(unittest.TestCase):
                     name="Farm01",
                     instance_id=instance_id,
                     account_name="Account A",
+                    character_slot=1,
+                    display_fingerprint="farm01-k1001",
+                    kingdom_id=1001,
+                    verification_metadata_json='{"source": "replay"}',
                 )
             )
             self.assertEqual(account_id, characters.get(character_id).game_account_id)
+            stored_character = characters.get(character_id)
+            self.assertEqual(1, stored_character.character_slot)
+            self.assertEqual("farm01-k1001", stored_character.display_fingerprint)
+            self.assertEqual(1001, stored_character.kingdom_id)
+            self.assertEqual('{"source": "replay"}', stored_character.verification_metadata_json)
 
             session_id = sessions.save(
                 InstanceSession(

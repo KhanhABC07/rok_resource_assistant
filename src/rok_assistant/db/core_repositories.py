@@ -240,16 +240,25 @@ class CharacterRepository:
                 cursor = self.db.execute(
                     """
                     INSERT INTO characters(
-                        name, instance_id, account_name, game_account_id, enabled,
+                        name, instance_id, account_name, game_account_id,
+                        character_slot, display_fingerprint, kingdom_id,
+                        verification_metadata_json, enabled,
                         alliance_help_enabled, alliance_donate_enabled, gift_collection_enabled
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         character.name.strip(),
                         character.instance_id,
                         account_name,
                         game_account_id,
+                        character.character_slot,
+                        character.display_fingerprint.strip(),
+                        character.kingdom_id,
+                        _json_object_text(
+                            character.verification_metadata_json,
+                            "verification_metadata_json",
+                        ),
                         int(character.enabled),
                         int(character.alliance_help_enabled),
                         int(character.alliance_donate_enabled),
@@ -263,7 +272,9 @@ class CharacterRepository:
             self.db.execute(
                 """
                 UPDATE characters
-                SET name = ?, instance_id = ?, account_name = ?, game_account_id = ?, enabled = ?,
+                SET name = ?, instance_id = ?, account_name = ?, game_account_id = ?,
+                    character_slot = ?, display_fingerprint = ?, kingdom_id = ?,
+                    verification_metadata_json = ?, enabled = ?,
                     alliance_help_enabled = ?, alliance_donate_enabled = ?, gift_collection_enabled = ?
                 WHERE id = ?
                 """,
@@ -272,6 +283,13 @@ class CharacterRepository:
                     character.instance_id,
                     account_name,
                     game_account_id,
+                    character.character_slot,
+                    character.display_fingerprint.strip(),
+                    character.kingdom_id,
+                    _json_object_text(
+                        character.verification_metadata_json,
+                        "verification_metadata_json",
+                    ),
                     int(character.enabled),
                     int(character.alliance_help_enabled),
                     int(character.alliance_donate_enabled),
@@ -326,6 +344,18 @@ class CharacterRepository:
             name=row["name"],
             instance_id=row["instance_id"],
             account_name=row["account_name"],
+            character_slot=(
+                row["character_slot"] if "character_slot" in row.keys() else None
+            ),
+            display_fingerprint=(
+                row["display_fingerprint"] if "display_fingerprint" in row.keys() else ""
+            ),
+            kingdom_id=row["kingdom_id"] if "kingdom_id" in row.keys() else None,
+            verification_metadata_json=(
+                row["verification_metadata_json"]
+                if "verification_metadata_json" in row.keys()
+                else "{}"
+            ),
             enabled=row_bool(row["enabled"]),
             alliance_help_enabled=row_bool(row["alliance_help_enabled"]),
             alliance_donate_enabled=row_bool(row["alliance_donate_enabled"]),
@@ -335,6 +365,16 @@ class CharacterRepository:
                 row["game_account_id"] if "game_account_id" in row.keys() else None
             ),
         )
+
+
+def _json_object_text(value: str, field_name: str) -> str:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field_name} must be valid JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{field_name} must be a JSON object.")
+    return json.dumps(parsed, sort_keys=True)
 
 
 class MarchRepository:

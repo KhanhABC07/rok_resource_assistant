@@ -1,4 +1,4 @@
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS characters (
     name TEXT NOT NULL,
     instance_id INTEGER NOT NULL,
     account_name TEXT NOT NULL DEFAULT '',
+    character_slot INTEGER CHECK(character_slot BETWEEN 1 AND 12),
+    display_fingerprint TEXT NOT NULL DEFAULT '',
+    kingdom_id INTEGER,
+    verification_metadata_json TEXT NOT NULL DEFAULT '{}',
     enabled INTEGER NOT NULL DEFAULT 1,
     alliance_help_enabled INTEGER NOT NULL DEFAULT 1,
     alliance_donate_enabled INTEGER NOT NULL DEFAULT 1,
@@ -53,8 +57,7 @@ CREATE TABLE IF NOT EXISTS characters (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(instance_id) REFERENCES instances(id) ON DELETE CASCADE,
-    FOREIGN KEY(game_account_id) REFERENCES game_accounts(id) ON DELETE SET NULL,
-    UNIQUE(instance_id, name)
+    FOREIGN KEY(game_account_id) REFERENCES game_accounts(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS marches (
