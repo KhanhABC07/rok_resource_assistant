@@ -1,22 +1,44 @@
 from __future__ import annotations
 
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from rok_assistant.db.models import TaskStep  # noqa: E402
+from rok_assistant.db.database import Database  # noqa: E402
+from rok_assistant.db.models import Character, Instance, Job, TaskStep  # noqa: E402
+from rok_assistant.db.repositories import (  # noqa: E402
+    CharacterRepository,
+    IncidentRepository,
+    InstanceRepository,
+    JobRepository,
+    JobRunRepository,
+    MarchRepository,
+    StepRunRepository,
+)
 from rok_assistant.task_engine import TaskRunner  # noqa: E402
 from rok_assistant.tasks.resource_search_workflow import (  # noqa: E402
+    RESOURCE_GATHERING_STATES,
+    MarchAvailability,
+    MarchDispatchResult,
+    ResourceGatheringActionResult,
+    ResourceGatheringConfig,
+    ResourceGatheringRequest,
+    ResourceGatheringWorkflow,
+    ResourceNodeSearchResult,
+    ResourcePreference,
     ResourceSearchWorkflow,
     ResourceType,
     check_template_readiness,
 )
+from rok_assistant.workflow_engine import WorkflowOutcome  # noqa: E402
 
 
 def step_data(
@@ -300,6 +322,274 @@ class ResourceSearchWorkflowTest(unittest.TestCase):
     def test_invalid_target_level_fails_validation(self) -> None:
         with self.assertRaises(ValueError):
             ResourceSearchWorkflow(resource_type="STONE", target_level=0)
+
+
+class FakeResourceDriver:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.search_levels: list[int] = []
+        self.available = MarchAvailability(True, march_slot=1, available_count=1)
+        self.dispatch = MarchDispatchResult(
+            True,
+            march_slot=1,
+            dispatch_id="dispatch-1",
+            expected_return_time="2026-07-07T01:00:00",
+        )
+        self.navigation = ResourceGatheringActionResult(True)
+        self.search_timeout = False
+        self.found_levels: set[int] = {8}
+
+    def navigate_to_resource_search(self, _request, _character):
+        self.calls.append("navigate_to_resource_search")
+        return self.navigation
+
+    def select_resource(self, _request, selection):
+        self.calls.append(f"select_resource:{selection.resource_type.value}:{selection.level}")
+        return ResourceGatheringActionResult(True)
+
+    def search_resource(self, _request, selection):
+        self.calls.append(f"search_resource:{selection.resource_type.value}:{selection.level}")
+        self.search_levels.append(selection.level)
+        if self.search_timeout:
+            raise TimeoutError("resource search timed out")
+        if selection.level not in self.found_levels:
+            return ResourceNodeSearchResult(
+                False,
+                selection.resource_type,
+                selection.level,
+                message="not found",
+                retryable=False,
+                screenshot_path=f"runtime/screens/{selection.level}-missing.png",
+            )
+        return ResourceNodeSearchResult(
+            True,
+            selection.resource_type,
+            selection.level,
+            confidence=0.92,
+            x=100,
+            y=200,
+        )
+
+    def validate_march_availability(self, _request, selection):
+        self.calls.append(f"validate_march:{selection.level}")
+        return self.available
+
+    def dispatch_gather_march(self, _request, selection, availability):
+        self.calls.append(f"dispatch_march:{selection.level}:{availability.march_slot}")
+        return self.dispatch
+
+    def verify_dispatch(self, _request, dispatch):
+        self.calls.append(f"verify_dispatch:{dispatch.dispatch_id}")
+        return ResourceGatheringActionResult(True, data={"verified": True})
+
+
+class FakeWatchdog:
+    def __init__(self, *, healthy: bool = True) -> None:
+        self.healthy = healthy
+        self.calls: list[int | None] = []
+
+    def monitor(
+        self,
+        *,
+        instance_id: int,
+        instance_index: int,
+        instance_name: str,
+        job_run_id: int | None = None,
+    ) -> object:
+        del instance_id, instance_index, instance_name
+        self.calls.append(job_run_id)
+        return SimpleNamespace(
+            healthy=self.healthy,
+            recovery_attempted=not self.healthy,
+            circuit_opened=not self.healthy,
+            observation=SimpleNamespace(
+                message="unhealthy" if not self.healthy else "",
+                screenshot_path="runtime/screens/unhealthy.png" if not self.healthy else "",
+            ),
+        )
+
+
+class ResourceGatheringWorkflowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "resource.sqlite3")
+        self.db.initialize()
+        self.instances = InstanceRepository(self.db)
+        self.characters = CharacterRepository(self.db)
+        self.marches = MarchRepository(self.db)
+        self.jobs = JobRepository(self.db)
+        self.job_runs = JobRunRepository(self.db)
+        self.step_runs = StepRunRepository(self.db)
+        self.incidents = IncidentRepository(self.db)
+        self.instance_id = self.instances.save(
+            Instance(name="MEmu 1", instance_index=0, instance_name="MEmu 1")
+        )
+        self.character_id = self.characters.save(
+            Character(id=None, name="Farm01", instance_id=self.instance_id)
+        )
+        self.driver = FakeResourceDriver()
+        self.watchdog = FakeWatchdog()
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def _job(self, key: str) -> int:
+        return self.jobs.save(
+            Job(
+                idempotency_key=key,
+                job_type="workflow",
+                scheduled_for="2026-07-07T00:00:00",
+            )
+        )
+
+    def _workflow(self) -> ResourceGatheringWorkflow:
+        return ResourceGatheringWorkflow(
+            characters=self.characters,
+            marches=self.marches,
+            driver=self.driver,
+            recovery_watchdog=self.watchdog,
+            job_runs=self.job_runs,
+            step_runs=self.step_runs,
+            incidents=self.incidents,
+            config=ResourceGatheringConfig(
+                workflow_timeout_seconds=30,
+                step_timeout_seconds=2,
+                retry_delay_seconds=0,
+            ),
+        )
+
+    def _request(
+        self,
+        *,
+        job_id: int | None = None,
+        run_key: str = "resource-run",
+        preferences: tuple[ResourcePreference, ...] = (),
+    ) -> ResourceGatheringRequest:
+        return ResourceGatheringRequest(
+            instance_id=self.instance_id,
+            instance_index=0,
+            instance_name="MEmu 1",
+            character_id=self.character_id,
+            resource_type=ResourceType.GOLD,
+            target_level=8,
+            resource_preferences=preferences,
+            job_id=job_id,
+            run_key=run_key,
+        )
+
+    def test_workflow_exposes_required_states(self) -> None:
+        self.assertEqual(RESOURCE_GATHERING_STATES, self._workflow().workflow_states)
+
+    def test_no_march_available_fails_before_dispatch_and_persists_reason(self) -> None:
+        self.driver.available = MarchAvailability(
+            False,
+            available_count=0,
+            message="No march available",
+            screenshot_path="runtime/screens/no-march.png",
+        )
+        job_id = self._job("resource-no-march")
+
+        result = self._workflow().execute(
+            self._request(job_id=job_id, run_key="resource-no-march")
+        )
+
+        self.assertEqual(WorkflowOutcome.FATAL_FAILURE, result.outcome)
+        self.assertEqual("validate_march", result.result["failure_state"])
+        self.assertNotIn("dispatch_march:8:1", self.driver.calls)
+        run = self.job_runs.get(result.job_run_id or 0)
+        payload = json.loads(run.result_json)  # type: ignore[union-attr]
+        self.assertEqual("No march available", payload["result"]["failure_reason"])
+
+    def test_resource_not_found_fails_with_search_metadata(self) -> None:
+        self.driver.found_levels = set()
+
+        result = self._workflow().execute(self._request(run_key="resource-not-found"))
+
+        self.assertEqual(WorkflowOutcome.FATAL_FAILURE, result.outcome)
+        self.assertEqual("search_resource", result.result["failure_state"])
+        self.assertEqual([8], self.driver.search_levels)
+
+    def test_lower_level_fallback_is_used_when_allowed(self) -> None:
+        self.driver.found_levels = {7}
+        preferences = (
+            ResourcePreference(
+                ResourceType.WOOD,
+                target_level=8,
+                minimum_level=6,
+                fallback_allowed=True,
+            ),
+        )
+
+        result = self._workflow().execute(
+            self._request(run_key="resource-fallback", preferences=preferences)
+        )
+
+        self.assertEqual(WorkflowOutcome.SUCCESS, result.outcome)
+        self.assertEqual([8, 7], self.driver.search_levels)
+        self.assertIn("select_resource:WOOD:7", self.driver.calls)
+        self.assertEqual(
+            {"resource_type": "WOOD", "level": 7, "fallback_from_level": 8},
+            result.result["selected_resource"],
+        )
+
+    def test_search_timeout_records_recovery_outcome(self) -> None:
+        self.driver.search_timeout = True
+
+        result = self._workflow().execute(
+            self._request(
+                job_id=self._job("resource-timeout"),
+                run_key="resource-timeout",
+            )
+        )
+
+        self.assertEqual(WorkflowOutcome.TIMEOUT, result.outcome)
+        self.assertEqual("search_resource", result.result["failure_state"])
+        self.assertEqual(
+            {"attempted": False, "healthy": True, "circuit_opened": False},
+            result.result["recovery_outcome"],
+        )
+
+    def test_dispatch_success_persists_selected_resource_and_march_metadata(self) -> None:
+        result = self._workflow().execute(
+            self._request(
+                job_id=self._job("resource-success"),
+                run_key="resource-success",
+            )
+        )
+
+        self.assertEqual(WorkflowOutcome.SUCCESS, result.outcome)
+        self.assertEqual("dispatch-1", result.result["march_dispatch"]["dispatch_id"])
+        marches = self.marches.list_for_character(self.character_id)
+        self.assertEqual("gathering", marches[0].status)
+        self.assertEqual("2026-07-07T01:00:00", marches[0].expected_return_time)
+        run = self.job_runs.get(result.job_run_id or 0)
+        payload = json.loads(run.result_json)  # type: ignore[union-attr]
+        self.assertEqual("GOLD", payload["result"]["selected_resource"]["resource_type"])
+        self.assertEqual("", run.error_message)  # type: ignore[union-attr]
+
+    def test_recovery_after_navigation_failure_opens_incident(self) -> None:
+        self.driver.navigation = ResourceGatheringActionResult(
+            False,
+            "navigation failed",
+            retryable=False,
+            screenshot_path="runtime/screens/navigation.png",
+        )
+
+        result = self._workflow().execute(
+            self._request(
+                job_id=self._job("resource-navigation-failure"),
+                run_key="resource-navigation-failure",
+            )
+        )
+
+        self.assertEqual(WorkflowOutcome.FATAL_FAILURE, result.outcome)
+        self.assertEqual("navigate_to_resource_search", result.result["failure_state"])
+        self.assertEqual(
+            {"attempted": False, "healthy": True, "circuit_opened": False},
+            result.result["recovery_outcome"],
+        )
+        self.assertEqual(1, len(self.incidents.list_open()))
 
 
 if __name__ == "__main__":

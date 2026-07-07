@@ -20,7 +20,21 @@ from .character_switch_workflow import (
     CharacterVerification,
 )
 from .manager import TaskManager
-from .resource_search_workflow import ResourceSearchWorkflow, ResourceType
+from .resource_search_workflow import (
+    RESOURCE_GATHERING_STATES,
+    RESOURCE_GATHERING_WORKFLOW_KEY,
+    MarchAvailability,
+    MarchDispatchResult,
+    ResourceGatheringActionResult,
+    ResourceGatheringConfig,
+    ResourceGatheringRequest,
+    ResourceGatheringWorkflow,
+    ResourceNodeSearchResult,
+    ResourcePreference,
+    ResourceSearchWorkflow,
+    ResourceSelection,
+    ResourceType,
+)
 
 __all__ = [
     "ACCOUNT_SWITCH_STATES",
@@ -39,7 +53,18 @@ __all__ = [
     "CharacterSwitchRequest",
     "CharacterSwitchWorkflow",
     "CharacterVerification",
+    "MarchAvailability",
+    "MarchDispatchResult",
+    "RESOURCE_GATHERING_STATES",
+    "RESOURCE_GATHERING_WORKFLOW_KEY",
+    "ResourceGatheringActionResult",
+    "ResourceGatheringConfig",
+    "ResourceGatheringRequest",
+    "ResourceGatheringWorkflow",
+    "ResourceNodeSearchResult",
+    "ResourcePreference",
     "ResourceSearchWorkflow",
+    "ResourceSelection",
     "ResourceType",
     "TaskContext",
     "TaskManager",
