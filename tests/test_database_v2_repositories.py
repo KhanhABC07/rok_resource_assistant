@@ -72,7 +72,11 @@ class DataV2RepositoryTest(unittest.TestCase):
 
             instance_id = instances.save(Instance(name="MEmu0", instance_name="MEmu0"))
             account_id = accounts.save(
-                GameAccount(account_name="Account A", metadata_json='{"tier": "farm"}')
+                GameAccount(
+                    account_name="Account A",
+                    secret_ref="mem://account/a",
+                    metadata_json='{"tier": "farm"}',
+                )
             )
             self.assertEqual(
                 account_id,
@@ -80,10 +84,12 @@ class DataV2RepositoryTest(unittest.TestCase):
                     GameAccount(
                         account_name="Account A",
                         display_name="Account A",
+                        secret_ref="mem://account/a",
                         metadata_json='{"tier": "farm"}',
                     )
                 ),
             )
+            self.assertEqual("mem://account/a", accounts.get(account_id).secret_ref)
             character_id = characters.save(
                 Character(
                     name="Farm01",

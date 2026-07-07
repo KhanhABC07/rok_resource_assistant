@@ -43,13 +43,15 @@ class GameAccountRepository:
                 self.db.execute(
                     """
                     INSERT INTO game_accounts(
-                        account_name, display_name, provider, external_id, enabled, metadata_json
+                        account_name, display_name, provider, external_id,
+                        secret_ref, enabled, metadata_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(account_name) DO UPDATE SET
                         display_name = excluded.display_name,
                         provider = excluded.provider,
                         external_id = excluded.external_id,
+                        secret_ref = excluded.secret_ref,
                         enabled = excluded.enabled,
                         metadata_json = excluded.metadata_json
                     """,
@@ -58,6 +60,7 @@ class GameAccountRepository:
                         display_name,
                         account.provider.strip(),
                         account.external_id.strip(),
+                        account.secret_ref.strip(),
                         int(account.enabled),
                         metadata_json,
                     ),
@@ -71,6 +74,7 @@ class GameAccountRepository:
                     display_name = ?,
                     provider = ?,
                     external_id = ?,
+                    secret_ref = ?,
                     enabled = ?,
                     metadata_json = ?
                 WHERE id = ?
@@ -80,6 +84,7 @@ class GameAccountRepository:
                     display_name,
                     account.provider.strip(),
                     account.external_id.strip(),
+                    account.secret_ref.strip(),
                     int(account.enabled),
                     metadata_json,
                     account.id,
@@ -98,6 +103,7 @@ class GameAccountRepository:
             display_name=row["display_name"],
             provider=row["provider"],
             external_id=row["external_id"],
+            secret_ref=row["secret_ref"],
             enabled=row_bool(row["enabled"]),
             metadata_json=row["metadata_json"],
             created_at=row["created_at"],

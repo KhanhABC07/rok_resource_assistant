@@ -366,6 +366,19 @@ def validate_recovery_v3_schema(connection: sqlite3.Connection) -> None:
     )
 
 
+def migrate_security_v4_schema(connection: sqlite3.Connection) -> None:
+    ensure_game_account_secret_ref(connection)
+    execute_script(connection, SCHEMA_SQL)
+
+
+def validate_security_v4_schema(connection: sqlite3.Connection) -> None:
+    _require_tables(
+        connection,
+        DATA_V2_TABLES | RECOVERY_V3_TABLES | LEGACY_TABLES | {"schema_migrations"},
+    )
+    _require_columns(connection, "game_accounts", {"secret_ref"})
+
+
 def ensure_legacy_instance_columns(connection: sqlite3.Connection) -> None:
     if not table_exists(connection, "instances"):
         return
@@ -404,6 +417,7 @@ def ensure_character_account_relationship(connection: sqlite3.Connection) -> Non
             display_name TEXT NOT NULL DEFAULT '',
             provider TEXT NOT NULL DEFAULT '',
             external_id TEXT NOT NULL DEFAULT '',
+            secret_ref TEXT NOT NULL DEFAULT '',
             enabled INTEGER NOT NULL DEFAULT 1,
             metadata_json TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -420,6 +434,18 @@ def ensure_character_account_relationship(connection: sqlite3.Connection) -> Non
             ALTER TABLE characters
             ADD COLUMN game_account_id INTEGER
                 REFERENCES game_accounts(id) ON DELETE SET NULL
+            """
+        )
+
+
+def ensure_game_account_secret_ref(connection: sqlite3.Connection) -> None:
+    if not table_exists(connection, "game_accounts"):
+        return
+    if "secret_ref" not in table_columns(connection, "game_accounts"):
+        connection.execute(
+            """
+            ALTER TABLE game_accounts
+            ADD COLUMN secret_ref TEXT NOT NULL DEFAULT ''
             """
         )
 
@@ -647,4 +673,5 @@ MIGRATIONS = (
     Migration(1, "legacy schema compatibility", migrate_legacy_schema, validate_legacy_schema),
     Migration(2, "data v2 schema", migrate_data_v2_schema, validate_data_v2_schema),
     Migration(3, "recovery watchdog schema", migrate_recovery_v3_schema, validate_recovery_v3_schema),
+    Migration(4, "credential references", migrate_security_v4_schema, validate_security_v4_schema),
 )
