@@ -39,7 +39,7 @@ class DatabaseMigrationTest(unittest.TestCase):
                 )
             }
             self.assertLessEqual(migrations.DATA_V2_TABLES | migrations.RECOVERY_V3_TABLES, tables)
-            self.assertEqual([1, 2, 3, 4], migration_versions(db))
+            self.assertEqual([1, 2, 3, 4, 5], migration_versions(db))
             self.assertEqual(1, db.fetch_one("PRAGMA foreign_keys")["foreign_keys"])
             self.assertEqual("wal", db.fetch_one("PRAGMA journal_mode")["journal_mode"])
             db.close()
@@ -54,13 +54,13 @@ class DatabaseMigrationTest(unittest.TestCase):
 
             db = Database(path)
             db.initialize()
-            self.assertEqual([1, 2, 3, 4], migration_versions(db))
+            self.assertEqual([1, 2, 3, 4, 5], migration_versions(db))
             db.close()
             first_backups = list(Path(temp_dir).glob("repeat.backup.*.sqlite3"))
 
             reopened = Database(path)
             reopened.initialize()
-            self.assertEqual([1, 2, 3, 4], migration_versions(reopened))
+            self.assertEqual([1, 2, 3, 4, 5], migration_versions(reopened))
             reopened.close()
             second_backups = list(Path(temp_dir).glob("repeat.backup.*.sqlite3"))
             self.assertEqual(first_backups, second_backups)
@@ -121,7 +121,7 @@ class DatabaseMigrationTest(unittest.TestCase):
             )
             self.assertEqual("Account A", character["account_name"])
             self.assertEqual(account["id"], character["game_account_id"])
-            self.assertEqual([1, 2, 3, 4], migration_versions(db))
+            self.assertEqual([1, 2, 3, 4, 5], migration_versions(db))
             db.close()
 
     def test_existing_v3_database_migrates_game_account_secret_ref(self) -> None:
@@ -133,7 +133,7 @@ class DatabaseMigrationTest(unittest.TestCase):
 
             connection = sqlite3.connect(path)
             try:
-                connection.execute("DELETE FROM schema_migrations WHERE version = 4")
+                connection.execute("DELETE FROM schema_migrations WHERE version IN (4, 5)")
                 connection.execute("ALTER TABLE game_accounts RENAME TO game_accounts_v4")
                 connection.execute(
                     """
@@ -187,7 +187,95 @@ class DatabaseMigrationTest(unittest.TestCase):
             )
             self.assertIn("secret_ref", columns)
             self.assertEqual("", account["secret_ref"])
-            self.assertEqual([1, 2, 3, 4], migration_versions(migrated))
+            self.assertEqual([1, 2, 3, 4, 5], migration_versions(migrated))
+            migrated.close()
+
+    def test_existing_v4_database_migrates_character_verification_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "v4_characters.sqlite3"
+            db = Database(path)
+            db.initialize()
+            db.close()
+
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("DELETE FROM schema_migrations WHERE version = 5")
+                connection.execute("DROP INDEX IF EXISTS idx_characters_account_slot")
+                connection.execute("ALTER TABLE characters RENAME TO characters_v5")
+                connection.execute(
+                    """
+                    CREATE TABLE characters (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        instance_id INTEGER NOT NULL,
+                        account_name TEXT NOT NULL DEFAULT '',
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        alliance_help_enabled INTEGER NOT NULL DEFAULT 1,
+                        alliance_donate_enabled INTEGER NOT NULL DEFAULT 1,
+                        gift_collection_enabled INTEGER NOT NULL DEFAULT 1,
+                        last_switch_at TEXT,
+                        game_account_id INTEGER,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(instance_id) REFERENCES instances(id) ON DELETE CASCADE,
+                        FOREIGN KEY(game_account_id) REFERENCES game_accounts(id) ON DELETE SET NULL,
+                        UNIQUE(instance_id, name)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO characters(
+                        id, name, instance_id, account_name, enabled,
+                        alliance_help_enabled, alliance_donate_enabled,
+                        gift_collection_enabled, last_switch_at, game_account_id,
+                        created_at, updated_at
+                    )
+                    SELECT
+                        id, name, instance_id, account_name, enabled,
+                        alliance_help_enabled, alliance_donate_enabled,
+                        gift_collection_enabled, last_switch_at, game_account_id,
+                        created_at, updated_at
+                    FROM characters_v5
+                    """
+                )
+                connection.execute("DROP TABLE characters_v5")
+                connection.commit()
+            finally:
+                connection.close()
+
+            migrated = Database(path)
+            migrated.initialize()
+            columns = {
+                row["name"]
+                for row in migrated.fetch_all("PRAGMA table_info(characters)")
+            }
+            self.assertLessEqual(
+                {
+                    "character_slot",
+                    "display_fingerprint",
+                    "kingdom_id",
+                    "verification_metadata_json",
+                },
+                columns,
+            )
+            create_sql = migrated.fetch_one(
+                """
+                SELECT sql
+                FROM sqlite_schema
+                WHERE type = 'table' AND name = 'characters'
+                """
+            )["sql"]
+            self.assertNotIn("UNIQUE(instance_id, name)", create_sql)
+            slot_index = migrated.fetch_one(
+                """
+                SELECT name
+                FROM sqlite_schema
+                WHERE type = 'index' AND name = 'idx_characters_account_slot'
+                """
+            )
+            self.assertIsNotNone(slot_index)
+            self.assertEqual([1, 2, 3, 4, 5], migration_versions(migrated))
             migrated.close()
 
     def test_existing_database_migrates_memu_columns(self) -> None:

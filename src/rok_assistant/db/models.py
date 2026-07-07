@@ -85,6 +85,10 @@ class Character:
     name: str = ""
     instance_id: int | None = None
     account_name: str = ""
+    character_slot: int | None = None
+    display_fingerprint: str = ""
+    kingdom_id: int | None = None
+    verification_metadata_json: str = "{}"
     enabled: bool = True
     alliance_help_enabled: bool = True
     alliance_donate_enabled: bool = True
