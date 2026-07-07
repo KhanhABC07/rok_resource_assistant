@@ -9,7 +9,21 @@ from .account_switch_workflow import (
 )
 from .base import TaskContext, TaskPlugin, TaskResult
 from .manager import TaskManager
-from .resource_search_workflow import ResourceSearchWorkflow, ResourceType
+from .resource_search_workflow import (
+    RESOURCE_GATHERING_STATES,
+    RESOURCE_GATHERING_WORKFLOW_KEY,
+    MarchAvailability,
+    MarchDispatchResult,
+    ResourceGatheringActionResult,
+    ResourceGatheringConfig,
+    ResourceGatheringRequest,
+    ResourceGatheringWorkflow,
+    ResourceNodeSearchResult,
+    ResourcePreference,
+    ResourceSearchWorkflow,
+    ResourceSelection,
+    ResourceType,
+)
 
 __all__ = [
     "ACCOUNT_SWITCH_STATES",
@@ -19,7 +33,18 @@ __all__ = [
     "AccountSwitchRequest",
     "AccountSwitchWorkflow",
     "AccountVerification",
+    "MarchAvailability",
+    "MarchDispatchResult",
+    "RESOURCE_GATHERING_STATES",
+    "RESOURCE_GATHERING_WORKFLOW_KEY",
+    "ResourceGatheringActionResult",
+    "ResourceGatheringConfig",
+    "ResourceGatheringRequest",
+    "ResourceGatheringWorkflow",
+    "ResourceNodeSearchResult",
+    "ResourcePreference",
     "ResourceSearchWorkflow",
+    "ResourceSelection",
     "ResourceType",
     "TaskContext",
     "TaskManager",
