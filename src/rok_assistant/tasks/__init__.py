@@ -205,6 +205,16 @@ from .gem_gathering_workflow import (
     GemSearchPolicy,
     evaluate_gem_detection_dataset,
 )
+from .map_fog_exploration_workflow import (
+    MAP_FOG_EXPLORATION_STATES,
+    MAP_FOG_EXPLORATION_WORKFLOW_KEY,
+    FogExplorationConfig,
+    FogExplorationRequest,
+    FogExplorationWorkflow,
+    FogScoutPolicy,
+    FogTargetObservation,
+    FogTargetStatus,
+)
 from .quest_claim_workflow import (
     QUEST_CLAIM_STATES,
     QUEST_CLAIM_TEMPLATE_KEYS,
@@ -274,6 +284,8 @@ __all__ = [
     "CITY_TROOP_COLLECTION_WORKFLOW_KEY",
     "GEM_GATHERING_STATES",
     "GEM_GATHERING_WORKFLOW_KEY",
+    "MAP_FOG_EXPLORATION_STATES",
+    "MAP_FOG_EXPLORATION_WORKFLOW_KEY",
     "QUEST_CLAIM_STATES",
     "QUEST_CLAIM_TEMPLATE_KEYS",
     "QUEST_CLAIM_WORKFLOW_KEY",
@@ -407,6 +419,12 @@ __all__ = [
     "GemGatheringConfig",
     "GemGatheringRequest",
     "GemGatheringWorkflow",
+    "FogExplorationConfig",
+    "FogExplorationRequest",
+    "FogExplorationWorkflow",
+    "FogScoutPolicy",
+    "FogTargetObservation",
+    "FogTargetStatus",
     "DailyObjectiveMilestoneObservation",
     "DailyObjectiveScan",
     "QuestAction",
