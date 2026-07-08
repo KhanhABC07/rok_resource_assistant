@@ -30,6 +30,19 @@ from .character_switch_workflow import (
     CharacterSwitchWorkflow,
     CharacterVerification,
 )
+from .gem_gathering_workflow import (
+    GEM_GATHERING_STATES,
+    GEM_GATHERING_WORKFLOW_KEY,
+    GemDepositObservation,
+    GemDepositStatus,
+    GemDetectionDatasetCase,
+    GemDetectionMetrics,
+    GemGatheringConfig,
+    GemGatheringRequest,
+    GemGatheringWorkflow,
+    GemSearchPolicy,
+    evaluate_gem_detection_dataset,
+)
 from .manager import TaskManager
 from .resource_search_workflow import (
     RESOURCE_GATHERING_STATES,
@@ -52,6 +65,8 @@ __all__ = [
     "ACCOUNT_SWITCH_WORKFLOW_KEY",
     "CHARACTER_SWITCH_STATES",
     "CHARACTER_SWITCH_WORKFLOW_KEY",
+    "GEM_GATHERING_STATES",
+    "GEM_GATHERING_WORKFLOW_KEY",
     "AccountSwitchActionResult",
     "AccountSwitchConfig",
     "AccountSwitchRequest",
@@ -73,6 +88,14 @@ __all__ = [
     "CharacterSwitchRequest",
     "CharacterSwitchWorkflow",
     "CharacterVerification",
+    "GemDepositObservation",
+    "GemDepositStatus",
+    "GemDetectionDatasetCase",
+    "GemDetectionMetrics",
+    "GemGatheringConfig",
+    "GemGatheringRequest",
+    "GemGatheringWorkflow",
+    "GemSearchPolicy",
     "MarchAvailability",
     "MarchDispatchResult",
     "RESOURCE_GATHERING_STATES",
@@ -90,4 +113,5 @@ __all__ = [
     "TaskManager",
     "TaskPlugin",
     "TaskResult",
+    "evaluate_gem_detection_dataset",
 ]
