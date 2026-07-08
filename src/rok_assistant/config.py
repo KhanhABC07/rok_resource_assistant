@@ -38,6 +38,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "preferred_resource_levels": [8, 7, 6],
         "minimum_resource_level": 6,
     },
+    "alliance_pit": {
+        "enabled_resource_types": ["FOOD", "WOOD", "STONE", "GOLD"],
+        "march_preset": "default",
+    },
     "plugins": {"packages": ["rok_assistant.plugins"]},
 }
 
