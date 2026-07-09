@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QObject, QRect, Qt, QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QDesktopServices, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from rok_assistant.action_engine import ActionEngine
+from rok_assistant.application.automation import AutomationViewModel
 from rok_assistant.app import AppContext
 from rok_assistant.db.models import Instance
 from rok_assistant.gui.template_capture import TemplateCaptureDialog
@@ -106,6 +107,15 @@ class AutomationWidget(QWidget):
     def __init__(self, context: AppContext):
         super().__init__()
         self.context = context
+        self.view_model = AutomationViewModel(
+            context.instances,
+            context.memu_adb_manager,
+            action_engine_factory=lambda adb_manager, instance_index, instance_name: ActionEngine(
+                adb_manager,
+                instance_index,
+                instance_name,
+            ),
+        )
         self.logger = logging.getLogger(self.__class__.__name__)
         self.latest_screenshot_path: Path | None = None
         self.selected_template_path: Path | None = None
@@ -391,21 +401,14 @@ class AutomationWidget(QWidget):
         self._update_quick_action_fields()
 
     def refresh(self) -> None:
-        rows = self.context.instances.list_all()
+        rows = self.view_model.list_target_rows()
         selected_id = self._selected_instance_id
         self._syncing_instance_selectors = True
         try:
             for combo in (self.instance_combo, self.quick_instance_combo):
                 combo.clear()
-                for instance in rows:
-                    if instance.id is None or instance.instance_index is None:
-                        continue
-                    name = instance.instance_name or instance.name
-                    state = "ADB connected" if instance.adb_connected else "ADB disconnected"
-                    combo.addItem(
-                        f"{instance.instance_index} — {name} [{state}]",
-                        instance.id,
-                    )
+                for row in rows:
+                    combo.addItem(row.label, row.id)
             if selected_id is None and self.instance_combo.count():
                 selected_id = int(self.instance_combo.itemData(0))
             self._selected_instance_id = selected_id
@@ -524,7 +527,7 @@ class AutomationWidget(QWidget):
     def _selected_action_instance(self) -> Instance | None:
         if self._selected_instance_id is None:
             return None
-        return self.context.instances.get(self._selected_instance_id)
+        return self.view_model.get_instance(self._selected_instance_id)
 
     def run_quick_action(self) -> None:
         command = str(self.quick_action_combo.currentData() or "")
@@ -538,22 +541,21 @@ class AutomationWidget(QWidget):
 
     def _run_action_test(self, command: str) -> None:
         instance = self._selected_action_instance()
-        if instance is None or instance.id is None:
-            self._append_quick_log("Action blocked: no MEmu instance selected.")
-            QMessageBox.warning(self, "Quick Action Test", "Select a MEmu instance first.")
-            return
-        if command in {"wait_for_template", "click_template"} and self.selected_template_path is None:
-            self._append_quick_log("Action blocked: no shared template selected.")
+        validation = self.view_model.validate_quick_action(
+            command=command,
+            selected_instance_id=self._selected_instance_id,
+            selected_template_path=self.selected_template_path,
+            last_match=self.last_match,
+        )
+        if not validation.allowed:
+            self._append_quick_log(validation.log_message)
             QMessageBox.warning(
                 self,
-                "Quick Action Test",
-                "Select a template in Image Recognition Test first.",
+                validation.warning_title,
+                validation.warning_message,
             )
             return
-        if command == "click_last_match" and self.last_match is None:
-            self._append_quick_log("Action blocked: no successful match is available.")
-            QMessageBox.warning(self, "Quick Action Test", "Run a successful match first.")
-            return
+        assert instance is not None and instance.id is not None
         parameters = self._action_parameters()
         action_name = self.quick_action_combo.currentText()
         self._append_quick_log(
@@ -571,23 +573,7 @@ class AutomationWidget(QWidget):
         )
 
     def _capture_screenshots(self, instance_ids: list[int]) -> dict[str, object]:
-        results = []
-        for instance_id in instance_ids:
-            instance = self.context.instances.get(instance_id)
-            if instance is None or instance.instance_index is None:
-                continue
-            path = self.context.memu_adb_manager.capture_screenshot(
-                instance.instance_index,
-                instance.instance_name or instance.name,
-            )
-            results.append(
-                {
-                    "name": instance.name,
-                    "success": path is not None,
-                    "path": "" if path is None else str(path),
-                }
-            )
-        return {"results": results}
+        return self.view_model.capture_screenshots(instance_ids)
 
     def _find_template(
         self,
@@ -596,22 +582,12 @@ class AutomationWidget(QWidget):
         threshold: float | None = None,
     ) -> dict[str, object]:
         effective_threshold = self.threshold_input.value() if threshold is None else threshold
-        result = find_template(screenshot_path, template_path, threshold=effective_threshold)
-        template_image = QImage(str(template_path))
-        width = template_image.width() if not template_image.isNull() else 0
-        height = template_image.height() if not template_image.isNull() else 0
-        found = bool(result.get("found"))
-        x = self._int_value(result.get("x"), -1)
-        y = self._int_value(result.get("y"), -1)
-        return {
-            "screenshot": str(screenshot_path),
-            "template": str(template_path),
-            **result,
-            "width": width if found else 0,
-            "height": height if found else 0,
-            "center_x": x + width // 2 if found else -1,
-            "center_y": y + height // 2 if found else -1,
-        }
+        return self.view_model.find_template(
+            screenshot_path,
+            template_path,
+            effective_threshold,
+            matcher=find_template,
+        )
 
     def _run_action_test_instance(
         self,
@@ -619,76 +595,11 @@ class AutomationWidget(QWidget):
         command: str,
         parameters: dict[str, object],
     ) -> dict[str, object]:
-        instance = self.context.instances.get(instance_id)
-        if instance is None or instance.instance_index is None:
-            return {
-                "action": command,
-                "instance": "",
-                "success": False,
-                "confidence": 0.0,
-                "x": -1,
-                "y": -1,
-                "elapsed_time": 0.0,
-                "message": "No MEmu instance selected.",
-            }
-
-        engine = ActionEngine(
-            self.context.memu_adb_manager,
-            instance.instance_index,
-            instance.instance_name or instance.name,
+        return self.view_model.run_quick_action(
+            instance_id=instance_id,
+            command=command,
+            parameters=parameters,
         )
-        template_path = parameters.get("template_path")
-        if command == "wait_for_template":
-            result = engine.wait_for_template(
-                Path(str(template_path)),
-                threshold=float(parameters["threshold"]),
-                timeout_seconds=float(parameters["timeout_seconds"]),
-                retry_interval_seconds=float(parameters["retry_interval_seconds"]),
-            )
-        elif command == "click_template":
-            result = engine.click_template(
-                Path(str(template_path)),
-                threshold=float(parameters["threshold"]),
-            )
-        elif command == "click_coordinates":
-            result = engine.click_coordinates(
-                int(parameters["x"]),
-                int(parameters["y"]),
-            )
-        elif command == "swipe_coordinates":
-            result = engine.swipe_coordinates(
-                int(parameters["swipe_x1"]),
-                int(parameters["swipe_y1"]),
-                int(parameters["swipe_x2"]),
-                int(parameters["swipe_y2"]),
-                int(parameters["swipe_duration_ms"]),
-            )
-        elif command == "click_last_match":
-            result = engine.click_coordinates(
-                int(parameters["last_match_x"]),
-                int(parameters["last_match_y"]),
-            )
-        else:
-            result = {
-                "success": False,
-                "confidence": 0.0,
-                "x": -1,
-                "y": -1,
-                "elapsed_time": 0.0,
-                "message": f"Unknown action: {command}",
-            }
-        command_text = self._generated_adb_command(
-            instance.instance_index,
-            command,
-            result,
-            parameters,
-        )
-        return {
-            "action": command,
-            "instance": instance.instance_name or instance.name,
-            "adb_command": command_text,
-            **result,
-        }
 
     def _handle_control_result(self, result: object) -> None:
         self.refresh()
@@ -735,111 +646,74 @@ class AutomationWidget(QWidget):
 
     def _handle_template_result(self, result: object) -> None:
         data = result if isinstance(result, dict) else {}
-        found = bool(data.get("found"))
-        confidence = float(data.get("confidence", 0.0) or 0.0)
-        x = self._int_value(data.get("x"), -1)
-        y = self._int_value(data.get("y"), -1)
-        width = self._int_value(data.get("width"), 0) if found else 0
-        height = self._int_value(data.get("height"), 0) if found else 0
-        center_x = self._int_value(data.get("center_x"), -1) if found else -1
-        center_y = self._int_value(data.get("center_y"), -1) if found else -1
-        self.match_confidence_label.setText(f"Confidence: {confidence:.4f}")
-        self.match_coordinates_label.setText(
-            f"Coordinates: ({x}, {y})" if found else "Coordinates: -"
-        )
-        self._set_match_status("FOUND" if found else "NOT FOUND")
-        self.result_confidence_label.setText(f"{confidence:.4f}")
-        self.result_screenshot_path_label.setText(str(data.get("screenshot", "") or "-"))
-        self.result_template_path_label.setText(str(data.get("template", "") or "-"))
+        view = self.view_model.template_match_view(data)
+        self.match_confidence_label.setText(f"Confidence: {view.confidence:.4f}")
+        self.match_coordinates_label.setText(view.coordinates_text)
+        self._set_match_status(view.status)
+        self.result_confidence_label.setText(f"{view.confidence:.4f}")
+        self.result_screenshot_path_label.setText(view.screenshot or "-")
+        self.result_template_path_label.setText(view.template or "-")
         self.result_message_label.setText("")
-        if found:
-            self.result_position_label.setText(f"({x}, {y})")
-            self.result_size_label.setText(f"{width} × {height}")
-            self.result_center_label.setText(f"({center_x}, {center_y})")
-            self.result_x_label.setText(f"x: {x}")
-            self.result_y_label.setText(f"y: {y}")
-            self.result_width_label.setText(f"width: {width}")
-            self.result_height_label.setText(f"height: {height}")
-            self.result_center_x_label.setText(f"center x: {center_x}")
-            self.result_center_y_label.setText(f"center y: {center_y}")
+        if view.found:
+            self.result_position_label.setText(view.position_text)
+            self.result_size_label.setText(f"{view.width} × {view.height}")
+            self.result_center_label.setText(view.center_text)
+            self.result_x_label.setText(f"x: {view.x}")
+            self.result_y_label.setText(f"y: {view.y}")
+            self.result_width_label.setText(f"width: {view.width}")
+            self.result_height_label.setText(f"height: {view.height}")
+            self.result_center_x_label.setText(f"center x: {view.center_x}")
+            self.result_center_y_label.setText(f"center y: {view.center_y}")
             self.screenshot_preview.load_image(
-                str(data.get("screenshot", "")),
-                QRect(x, y, width, height),
+                view.screenshot,
+                QRect(view.x, view.y, view.width, view.height),
             )
-            self.last_match = {
-                "x": x,
-                "y": y,
-                "width": width,
-                "height": height,
-                "center_x": center_x,
-                "center_y": center_y,
-                "confidence": confidence,
-            }
+            self.last_match = view.last_match
         else:
             self.last_match = None
             self._clear_result_coordinates()
-            self.screenshot_preview.load_image(str(data.get("screenshot", "")))
+            self.screenshot_preview.load_image(view.screenshot)
         self._update_last_match_state()
         self.logger.info(
             "[ImageMatch] Result found=%s confidence=%.4f x=%s y=%s screenshot=%s template=%s",
-            found,
-            confidence,
-            x,
-            y,
-            data.get("screenshot", ""),
-            data.get("template", ""),
+            view.found,
+            view.confidence,
+            view.x,
+            view.y,
+            view.screenshot,
+            view.template,
         )
 
     def _handle_action_result(self, result: object) -> None:
         data = result if isinstance(result, dict) else {}
-        success = bool(data.get("success"))
-        confidence = float(data.get("confidence", 0.0) or 0.0)
-        x = self._int_value(data.get("x"), -1)
-        y = self._int_value(data.get("y"), -1)
-        elapsed = float(data.get("elapsed_time", 0.0) or 0.0)
-        message = str(data.get("message", "") or "")
-        adb_command = str(data.get("adb_command", "") or "")
-        status = "SUCCESS" if success else "FAILED"
-        suffix = f" | {message}" if message else ""
-        self.action_result_label.setText(
-            f"Result: {status} | Confidence: {confidence:.4f} | "
-            f"Coordinates: ({x}, {y}) | Elapsed: {elapsed:.2f}s{suffix}"
-        )
-        self.quick_status_label.setText(status)
+        view = self.view_model.quick_action_result_view(data)
+        self.action_result_label.setText(view.result_summary)
+        self.quick_status_label.setText(view.status)
         self._set_status_style(
             self.quick_status_label,
-            "success" if success else "error",
+            view.status_kind,
         )
-        self.quick_elapsed_label.setText(f"{elapsed:.2f}s")
-        self.quick_coordinates_label.setText(
-            f"({x}, {y})" if x >= 0 and y >= 0 else "-"
-        )
-        self.quick_confidence_label.setText(
-            f"{confidence:.4f}"
-            if data.get("action") in {"click_template", "wait_for_template"}
-            else "-"
-        )
-        self.quick_message_label.setText(message or "-")
-        self.quick_command_label.setText(adb_command or "-")
-        self._append_quick_log(
-            f"{data.get('action', 'Action')} completed with {status} "
-            f"in {elapsed:.2f}s at ({x}, {y})."
-        )
-        if adb_command:
-            self._append_quick_log(f"ADB command: {adb_command}")
-        if message:
-            self._append_quick_log(f"Error: {message}")
+        self.quick_elapsed_label.setText(view.elapsed_text)
+        self.quick_coordinates_label.setText(view.coordinates_text)
+        self.quick_confidence_label.setText(view.confidence_text)
+        self.quick_message_label.setText(view.message_text)
+        self.quick_command_label.setText(view.adb_command_text)
+        self._append_quick_log(view.log_summary)
+        if view.adb_command:
+            self._append_quick_log(f"ADB command: {view.adb_command}")
+        if view.message:
+            self._append_quick_log(f"Error: {view.message}")
         self.logger.info(
             "[Action] GUI result action=%s instance=%s success=%s confidence=%.4f x=%s y=%s "
             "elapsed=%.2fs message=%s",
             data.get("action", ""),
             data.get("instance", ""),
-            success,
-            confidence,
-            x,
-            y,
-            elapsed,
-            message,
+            view.success,
+            view.confidence,
+            view.x,
+            view.y,
+            view.elapsed_time,
+            view.message,
         )
 
     def _run_background(
@@ -909,22 +783,20 @@ class AutomationWidget(QWidget):
         self._update_quick_action_enabled()
 
     def _action_parameters(self) -> dict[str, object]:
-        last_match = self.last_match or {}
-        return {
-            "template_path": self.selected_template_path,
-            "threshold": self.quick_threshold_input.value(),
-            "timeout_seconds": self.quick_timeout_input.value(),
-            "retry_interval_seconds": self.quick_retry_input.value(),
-            "x": self.quick_x_input.value(),
-            "y": self.quick_y_input.value(),
-            "swipe_x1": self.quick_swipe_x1_input.value(),
-            "swipe_y1": self.quick_swipe_y1_input.value(),
-            "swipe_x2": self.quick_swipe_x2_input.value(),
-            "swipe_y2": self.quick_swipe_y2_input.value(),
-            "swipe_duration_ms": self.quick_swipe_duration_input.value(),
-            "last_match_x": self._int_value(last_match.get("center_x"), -1),
-            "last_match_y": self._int_value(last_match.get("center_y"), -1),
-        }
+        return self.view_model.action_parameters(
+            template_path=self.selected_template_path,
+            threshold=self.quick_threshold_input.value(),
+            timeout_seconds=self.quick_timeout_input.value(),
+            retry_interval_seconds=self.quick_retry_input.value(),
+            x=self.quick_x_input.value(),
+            y=self.quick_y_input.value(),
+            swipe_x1=self.quick_swipe_x1_input.value(),
+            swipe_y1=self.quick_swipe_y1_input.value(),
+            swipe_x2=self.quick_swipe_x2_input.value(),
+            swipe_y2=self.quick_swipe_y2_input.value(),
+            swipe_duration_ms=self.quick_swipe_duration_input.value(),
+            last_match=self.last_match,
+        )
 
     def _set_template_labels(self) -> None:
         text = f"Template: {self.selected_template_path}" if self.selected_template_path else "Template: -"
@@ -1075,25 +947,13 @@ class AutomationWidget(QWidget):
         result: dict[str, object],
         parameters: dict[str, object],
     ) -> str:
-        if command in {"click_template", "click_coordinates", "click_last_match"}:
-            x = int(result.get("x", -1))
-            y = int(result.get("y", -1))
-            if x >= 0 and y >= 0:
-                return f"memuc adb -i {instance_index} shell input tap {x} {y}"
-        if command == "swipe_coordinates":
-            return (
-                f"memuc adb -i {instance_index} shell input swipe "
-                f"{parameters['swipe_x1']} {parameters['swipe_y1']} "
-                f"{parameters['swipe_x2']} {parameters['swipe_y2']} "
-                f"{parameters['swipe_duration_ms']}"
-            )
-        return ""
+        return AutomationViewModel.generated_adb_command(
+            instance_index,
+            command,
+            result,
+            parameters,
+        )
 
     @staticmethod
     def _int_value(value: object, default: int) -> int:
-        if value is None:
-            return default
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
+        return AutomationViewModel.int_value(value, default)
