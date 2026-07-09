@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from rok_assistant.app import AppContext
+from rok_assistant.gui.account_config import AccountConfigWidget
 from rok_assistant.gui.automation import AutomationWidget
 from rok_assistant.gui.character_manager import CharacterManagerWidget
 from rok_assistant.gui.dashboard import DashboardWidget
@@ -36,6 +37,7 @@ class MainWindow(QMainWindow):
         self.dashboard = DashboardWidget(context)
         self.instances = InstanceManagerWidget(context)
         self.automation = AutomationWidget(context)
+        self.accounts = AccountConfigWidget(context)
         self.characters = CharacterManagerWidget(context)
         self.marches = MarchConfigWidget(context)
         self.tasks = TaskQueueWidget(context)
@@ -45,6 +47,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.dashboard, "Dashboard")
         self.tabs.addTab(self.instances, "Instances")
         self.tabs.addTab(self.automation, "Automation")
+        self.tabs.addTab(self.accounts, "Accounts")
         self.tabs.addTab(self.characters, "Characters")
         self.tabs.addTab(self.marches, "Marches")
         self.tabs.addTab(self.tasks, "Tasks")
@@ -161,6 +164,7 @@ class MainWindow(QMainWindow):
     def refresh_all(self) -> None:
         self.instances.refresh()
         self.automation.refresh()
+        self.accounts.refresh()
         self.characters.refresh()
         self.marches.refresh_characters()
         self.tasks.refresh()
