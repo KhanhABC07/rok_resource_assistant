@@ -23,6 +23,7 @@ from rok_assistant.vision import (
     DetectionResult,
     EvidenceCaptureRequest,
     EvidenceReference,
+    EvidenceRetentionPolicy,
     FileSystemEvidenceStore,
     SceneClassificationResult,
     SceneClassificationStatus,
@@ -452,6 +453,41 @@ class EvidenceCaptureTest(unittest.TestCase):
             self.assertTrue(second.is_valid, second.diagnostics)
             self.assertNotEqual(first.reference.image_path, second.reference.image_path)
 
+    def test_retention_prunes_oldest_evidence_pairs_and_ignores_unrelated_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clock = _SequenceClock(
+                [
+                    datetime(2026, 7, 1, 1, 0, 0, tzinfo=UTC),
+                    datetime(2026, 7, 2, 1, 0, 0, tzinfo=UTC),
+                    datetime(2026, 7, 3, 1, 0, 0, tzinfo=UTC),
+                    datetime(2026, 7, 4, 1, 0, 0, tzinfo=UTC),
+                    datetime(2026, 7, 5, 1, 0, 0, tzinfo=UTC),
+                ]
+            )
+            store = FileSystemEvidenceStore(
+                temp_dir,
+                clock=clock,
+                identifier_factory=_IncrementingIdentifier(),
+            )
+            references = [
+                store.capture(EvidenceCaptureRequest(image=self._image())).reference
+                for _ in range(4)
+            ]
+            unrelated = Path(temp_dir) / "screenshots" / "note.txt"
+            unrelated.write_text("keep", encoding="utf-8")
+
+            result = store.apply_retention(EvidenceRetentionPolicy(max_age_days=0, max_files=2))
+
+            self.assertEqual(4, result.inspected)
+            self.assertEqual(2, result.deleted)
+            self.assertTrue(unrelated.is_file())
+            for reference in references[:2]:
+                self.assertFalse((Path(temp_dir) / reference.image_path).exists())
+                self.assertFalse((Path(temp_dir) / reference.metadata_path).exists())
+            for reference in references[2:]:
+                self.assertTrue((Path(temp_dir) / reference.image_path).is_file())
+                self.assertTrue((Path(temp_dir) / reference.metadata_path).is_file())
+
     def test_detection_result_metadata_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             detection = DetectionResult(
@@ -640,6 +676,16 @@ class _IncrementingIdentifier:
     def __call__(self) -> str:
         self.value += 1
         return f"id-{self.value}"
+
+
+class _SequenceClock:
+    def __init__(self, values: list[datetime]) -> None:
+        self.values = list(values)
+
+    def __call__(self) -> datetime:
+        if len(self.values) == 1:
+            return self.values[0]
+        return self.values.pop(0)
 
 
 class _FailingMetadataCommitStore(FileSystemEvidenceStore):
