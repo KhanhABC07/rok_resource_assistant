@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from rok_assistant.app import AppContext
+from rok_assistant.gui.style import preview_surface_qss
 from rok_assistant.paths import TEMPLATE_DIR
 
 
@@ -29,7 +30,7 @@ class CropPreviewLabel(QLabel):
         super().__init__("Capture or browse a screenshot")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(480, 300)
-        self.setStyleSheet("QLabel { background: #171717; border: 1px solid #555; }")
+        self.setStyleSheet(preview_surface_qss())
         self._source_pixmap = QPixmap()
         self._display_rect = QRect()
         self._drag_start: QPoint | None = None

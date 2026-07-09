@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -45,7 +45,15 @@ from rok_assistant.application.task_queue import (
     TaskResult,
 )
 from rok_assistant.db.models import AUTOMATION_ACTION_TYPES, Instance
-from rok_assistant.gui.widgets import set_table_item
+from rok_assistant.gui.widgets import (
+    StatusBadge,
+    apply_button_variant,
+    apply_status_text_style,
+    configure_table,
+    set_empty_table_state,
+    set_table_item,
+    status_qcolor,
+)
 from rok_assistant.paths import PROJECT_ROOT, TEMPLATE_DIR
 
 
@@ -139,6 +147,8 @@ class TaskQueueWidget(QWidget):
         self.duplicate_task_button = QPushButton("Duplicate Task")
         self.run_task_button = QPushButton("Run Task")
         self.refresh_tasks_button = QPushButton("Refresh")
+        apply_button_variant(self.delete_task_button, "danger")
+        apply_button_variant(self.refresh_tasks_button, "secondary")
 
         task_buttons = QHBoxLayout()
         for button in (
@@ -158,13 +168,13 @@ class TaskQueueWidget(QWidget):
         self.tasks_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tasks_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.tasks_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.tasks_table.horizontalHeader().setStretchLastSection(True)
-        self.tasks_table.setMinimumHeight(120)
+        configure_table(self.tasks_table, min_height=120)
 
         self.action_type_combo = QComboBox()
         self.action_type_combo.addItems(AUTOMATION_ACTION_TYPES)
         self.template_path_input = QLineEdit()
         self.browse_template_button = QPushButton("Browse")
+        apply_button_variant(self.browse_template_button, "secondary")
         template_row = QHBoxLayout()
         template_row.addWidget(self.template_path_input)
         template_row.addWidget(self.browse_template_button)
@@ -255,6 +265,9 @@ class TaskQueueWidget(QWidget):
         self.remove_step_button = QPushButton("Remove Step")
         self.move_step_up_button = QPushButton("Move Up")
         self.move_step_down_button = QPushButton("Move Down")
+        apply_button_variant(self.remove_step_button, "danger")
+        for button in (self.move_step_up_button, self.move_step_down_button):
+            apply_button_variant(button, "secondary")
 
         step_buttons_row_one = QHBoxLayout()
         for button in (
@@ -287,7 +300,7 @@ class TaskQueueWidget(QWidget):
         self.steps_table.setColumnWidth(0, 60)
         self.steps_table.setColumnWidth(1, 150)
         self.steps_table.setColumnWidth(3, 130)
-        self.steps_table.setMinimumHeight(180)
+        configure_table(self.steps_table, stretch_last=False, min_height=180)
 
         self.task_status_label = QLabel("Ready")
         self.task_status_label.setWordWrap(True)
@@ -338,10 +351,7 @@ class TaskQueueWidget(QWidget):
         steps_tab_layout.setContentsMargins(4, 4, 4, 4)
         steps_tab_layout.addWidget(self.steps_splitter, 1)
 
-        self.readiness_state_label = QLabel("READY")
-        self.readiness_state_label.setStyleSheet(
-            "color: #1f7a3a; font-size: 16px; font-weight: 600;"
-        )
+        self.readiness_state_label = StatusBadge("READY", "success")
         self.readiness_count_label = QLabel("0 missing templates")
         readiness_summary = QHBoxLayout()
         readiness_summary.addWidget(self.readiness_state_label)
@@ -367,10 +377,16 @@ class TaskQueueWidget(QWidget):
         self.template_readiness_table.setColumnWidth(0, 220)
         self.template_readiness_table.setColumnWidth(2, 100)
         self.template_readiness_table.setColumnWidth(3, 100)
-        self.template_readiness_table.setMinimumHeight(180)
+        configure_table(
+            self.template_readiness_table,
+            stretch_last=False,
+            min_height=180,
+        )
 
         self.recheck_templates_button = QPushButton("Recheck Templates")
         self.open_template_folder_button = QPushButton("Open Template Folder")
+        apply_button_variant(self.recheck_templates_button, "secondary")
+        apply_button_variant(self.open_template_folder_button, "secondary")
         readiness_buttons = QHBoxLayout()
         readiness_buttons.addWidget(self.recheck_templates_button)
         readiness_buttons.addWidget(self.open_template_folder_button)
@@ -432,6 +448,7 @@ class TaskQueueWidget(QWidget):
     def _build_scheduler_tab(self) -> None:
         self.create_scheduled_button = QPushButton("Create Tasks From Config")
         self.refresh_scheduled_button = QPushButton("Refresh")
+        apply_button_variant(self.refresh_scheduled_button, "secondary")
         controls = QHBoxLayout()
         controls.addWidget(self.create_scheduled_button)
         controls.addWidget(self.refresh_scheduled_button)
@@ -452,7 +469,7 @@ class TaskQueueWidget(QWidget):
                 "Message",
             ]
         )
-        self.scheduler_table.horizontalHeader().setStretchLastSection(True)
+        configure_table(self.scheduler_table)
 
         layout = QVBoxLayout(self.scheduler_tab)
         layout.addLayout(controls)
@@ -463,6 +480,7 @@ class TaskQueueWidget(QWidget):
 
     def _build_run_history_tab(self) -> None:
         self.refresh_history_button = QPushButton("Refresh")
+        apply_button_variant(self.refresh_history_button, "secondary")
         controls = QHBoxLayout()
         controls.addWidget(self.refresh_history_button)
         controls.addStretch(1)
@@ -486,7 +504,7 @@ class TaskQueueWidget(QWidget):
             QAbstractItemView.SelectionMode.SingleSelection
         )
         self.run_history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.run_history_table.horizontalHeader().setStretchLastSection(True)
+        configure_table(self.run_history_table)
 
         layout = QVBoxLayout(self.run_history_tab)
         layout.addLayout(controls)
@@ -824,6 +842,7 @@ class TaskQueueWidget(QWidget):
             set_table_item(self.tasks_table, row, 1, task.name)
             set_table_item(self.tasks_table, row, 2, task.enabled)
             set_table_item(self.tasks_table, row, 3, task.created_at)
+        set_empty_table_state(self.tasks_table, "No automation tasks have been created.")
         if self.selected_task_id is not None and self.view_model.task_exists(
             self.selected_task_id
         ):
@@ -837,6 +856,11 @@ class TaskQueueWidget(QWidget):
         if self.selected_task_id is None:
             self.steps_table.setRowCount(0)
             self.template_readiness_table.setRowCount(0)
+            set_empty_table_state(self.steps_table, "Select a task to view workflow steps.")
+            set_empty_table_state(
+                self.template_readiness_table,
+                "Select a task to inspect template readiness.",
+            )
             self._selected_task_templates_ready = True
             self._set_readiness_summary(True, 0)
             self._update_run_button_state()
@@ -851,12 +875,13 @@ class TaskQueueWidget(QWidget):
             set_table_item(self.steps_table, row, 2, step.parameters)
             status_item = QTableWidgetItem(step.status)
             if step.status_kind == "ready":
-                status_item.setForeground(QColor("#1f7a3a"))
+                status_item.setForeground(status_qcolor("success"))
             elif step.status_kind == "missing":
-                status_item.setForeground(QColor("#b00020"))
+                status_item.setForeground(status_qcolor("danger"))
             else:
-                status_item.setForeground(QColor("#9a5a00"))
+                status_item.setForeground(status_qcolor("warning"))
             self.steps_table.setItem(row, 3, status_item)
+        set_empty_table_state(self.steps_table, "This task has no workflow steps.")
         self._refresh_template_readiness()
 
     def _refresh_template_readiness(self) -> None:
@@ -900,10 +925,9 @@ class TaskQueueWidget(QWidget):
         missing_count: int,
         invalid_count: int = 0,
     ) -> None:
-        self.readiness_state_label.setText("READY" if ready else "NOT READY")
-        color = "#1f7a3a" if ready else "#b00020"
-        self.readiness_state_label.setStyleSheet(
-            f"color: {color}; font-size: 16px; font-weight: 600;"
+        self.readiness_state_label.set_status(
+            "READY" if ready else "NOT READY",
+            "success" if ready else "danger",
         )
         summary = f"{missing_count} missing template"
         if missing_count != 1:
@@ -936,11 +960,11 @@ class TaskQueueWidget(QWidget):
             )
             status_item = QTableWidgetItem(template_row.status)
             if template_row.status_kind == "ready":
-                status_item.setForeground(QColor("#1f7a3a"))
+                status_item.setForeground(status_qcolor("success"))
             elif template_row.status_kind == "missing":
-                status_item.setForeground(QColor("#b00020"))
+                status_item.setForeground(status_qcolor("danger"))
             else:
-                status_item.setForeground(QColor("#9a5a00"))
+                status_item.setForeground(status_qcolor("warning"))
             self.template_readiness_table.setItem(row, 2, status_item)
             if template_row.status_kind == "missing":
                 browse_button = QPushButton("Browse")
@@ -966,6 +990,12 @@ class TaskQueueWidget(QWidget):
                 self.template_readiness_table.setCellWidget(row, 3, browse_button)
 
         self.template_readiness_table.setEnabled(readiness_required)
+        message = (
+            "No template dependencies were found for this task."
+            if readiness_required
+            else "Template readiness is not required for this task."
+        )
+        set_empty_table_state(self.template_readiness_table, message)
 
     def recheck_templates(self) -> None:
         self.refresh_steps()
@@ -1043,6 +1073,7 @@ class TaskQueueWidget(QWidget):
             set_table_item(self.scheduler_table, row, 7, task.scheduled_for)
             set_table_item(self.scheduler_table, row, 8, task.attempts)
             set_table_item(self.scheduler_table, row, 9, task.error_message)
+        set_empty_table_state(self.scheduler_table, "No scheduled tasks are queued.")
 
     def refresh_run_history(self) -> None:
         self.view_model.task_run_history = getattr(self.context, "task_run_history", None)
@@ -1063,6 +1094,7 @@ class TaskQueueWidget(QWidget):
                 6,
                 run.error_or_abort_reason,
             )
+        set_empty_table_state(self.run_history_table, "No task run history is available.")
 
     def _run_background(self, callback: Callable[[], TaskExecutionResult]) -> None:
         self._set_busy(True)
@@ -1114,19 +1146,19 @@ class TaskQueueWidget(QWidget):
 
     def _set_task_status_style(self, result: TaskResult) -> None:
         if result == TaskResult.SUCCESS:
-            self.task_status_label.setStyleSheet("color: #1f7a3a; font-weight: 600;")
+            apply_status_text_style(self.task_status_label, "success")
         elif result == TaskResult.ABORTED:
-            self.task_status_label.setStyleSheet("color: #9a5a00; font-weight: 600;")
+            apply_status_text_style(self.task_status_label, "warning")
         else:
-            self.task_status_label.setStyleSheet("color: #b00020; font-weight: 600;")
+            apply_status_text_style(self.task_status_label, "danger")
 
     @staticmethod
-    def _result_color(result: str) -> QColor:
+    def _result_color(result: str):
         if result == TaskResult.SUCCESS.value:
-            return QColor("#1f7a3a")
+            return status_qcolor("success")
         if result == TaskResult.ABORTED.value:
-            return QColor("#9a5a00")
-        return QColor("#b00020")
+            return status_qcolor("warning")
+        return status_qcolor("danger")
 
     def _cleanup_worker(self, thread: QThread) -> None:
         self._workers = [

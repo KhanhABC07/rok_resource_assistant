@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 
 from rok_assistant.app import AppContext
 from rok_assistant.db.models import March
-from rok_assistant.gui.widgets import set_table_item
+from rok_assistant.gui.widgets import apply_button_variant, configure_table, set_table_item
 
 
 class MarchConfigWidget(QWidget):
@@ -25,6 +25,7 @@ class MarchConfigWidget(QWidget):
         self.refresh_button = QPushButton("Refresh Characters")
         self.save_button = QPushButton("Save Marches")
         self.schedule_button = QPushButton("Create Tasks")
+        apply_button_variant(self.refresh_button, "secondary")
 
         top = QHBoxLayout()
         top.addWidget(self.character_input, 1)
@@ -41,7 +42,7 @@ class MarchConfigWidget(QWidget):
                 "Expected Return Time",
             ]
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        configure_table(self.table, read_only=False)
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)

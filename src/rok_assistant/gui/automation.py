@@ -30,7 +30,9 @@ from rok_assistant.action_engine import ActionEngine
 from rok_assistant.application.automation import AutomationViewModel
 from rok_assistant.app import AppContext
 from rok_assistant.db.models import Instance
+from rok_assistant.gui.style import preview_surface_qss, status_badge_qss
 from rok_assistant.gui.template_capture import TemplateCaptureDialog
+from rok_assistant.gui.widgets import StatusBadge, apply_button_variant
 from rok_assistant.paths import SCREENSHOT_DIR, TEMPLATE_DIR
 from rok_assistant.vision import find_template
 
@@ -61,7 +63,7 @@ class ImagePreviewLabel(QLabel):
         self.match_rect: QRect | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(240, 180)
-        self.setStyleSheet("QLabel { background: #171717; border: 1px solid #555; }")
+        self.setStyleSheet(preview_surface_qss())
 
     def load_image(self, path: str | Path, match_rect: QRect | None = None) -> bool:
         pixmap = QPixmap(str(path))
@@ -139,6 +141,13 @@ class AutomationWidget(QWidget):
         self.run_match_button = QPushButton("Run Match")
         self.open_template_capture_button = QPushButton("Open Template Capture")
         self.open_screenshot_folder_button = QPushButton("Open Screenshot Folder")
+        for button in (
+            self.refresh_targets_button,
+            self.open_instances_button,
+            self.open_template_capture_button,
+            self.open_screenshot_folder_button,
+        ):
+            apply_button_variant(button, "secondary")
         self.template_preview = ImagePreviewLabel("No template selected")
         self.screenshot_preview = ImagePreviewLabel("No screenshot captured")
 
@@ -150,7 +159,7 @@ class AutomationWidget(QWidget):
         self.match_confidence_label = QLabel("Confidence: -")
         self.match_coordinates_label = QLabel("Coordinates: -")
 
-        self.result_status_label = QLabel("-")
+        self.result_status_label = StatusBadge("-", "neutral")
         self.result_confidence_label = QLabel("-")
         self.result_position_label = QLabel("-")
         self.result_size_label = QLabel("-")
@@ -172,6 +181,8 @@ class AutomationWidget(QWidget):
         self.quick_instance_combo.setMinimumContentsLength(24)
         self.quick_refresh_instances_button = QPushButton("Refresh")
         self.quick_open_instances_button = QPushButton("Open Instances")
+        apply_button_variant(self.quick_refresh_instances_button, "secondary")
+        apply_button_variant(self.quick_open_instances_button, "secondary")
         self.quick_action_combo = QComboBox()
         for label, command in (
             ("Click Last Match", "click_last_match"),
@@ -225,7 +236,7 @@ class AutomationWidget(QWidget):
         self.quick_template_value = QLabel("-")
         self.quick_last_match_value = QLabel("Unavailable")
         self.quick_template_value.setWordWrap(True)
-        self.quick_status_label = QLabel("-")
+        self.quick_status_label = StatusBadge("-", "neutral")
         self.quick_elapsed_label = QLabel("-")
         self.quick_coordinates_label = QLabel("-")
         self.quick_confidence_label = QLabel("-")
@@ -899,19 +910,10 @@ class AutomationWidget(QWidget):
 
     @staticmethod
     def _set_status_style(label: QLabel, style: str) -> None:
-        colors = {
-            "success": ("#166534", "#dcfce7", "#22c55e"),
-            "warning": ("#854d0e", "#fef9c3", "#eab308"),
-            "error": ("#991b1b", "#fee2e2", "#ef4444"),
-            "neutral": ("#4b5563", "#f3f4f6", "#9ca3af"),
-        }
-        foreground, background, border = colors[style]
-        label.setStyleSheet(
-            "QLabel {"
-            f"color: {foreground}; background: {background}; border: 1px solid {border};"
-            "border-radius: 3px; padding: 2px 7px; font-weight: 600;"
-            "}"
-        )
+        if isinstance(label, StatusBadge):
+            label.set_status(label.text(), style)
+            return
+        label.setStyleSheet(status_badge_qss(style))
 
     def _append_quick_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
