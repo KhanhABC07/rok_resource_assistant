@@ -10,6 +10,7 @@ from rok_assistant.db import (
     AutomationTaskRepository,
     CharacterRepository,
     Database,
+    GameAccountRepository,
     IncidentRepository,
     InstanceCircuitBreakerRepository,
     InstanceRepository,
@@ -31,6 +32,7 @@ from rok_assistant.logging_setup import configure_logging
 from rok_assistant.paths import ensure_runtime_dirs
 from rok_assistant.recovery import ErrorRecoveryPolicy
 from rok_assistant.scheduler import Scheduler, WorkerPool
+from rok_assistant.security import DpapiFileSecretStore, SecretStore
 from rok_assistant.tasks import TaskContext, TaskManager
 from rok_assistant.vision import VisionOcrModule
 
@@ -39,6 +41,7 @@ from rok_assistant.vision import VisionOcrModule
 class AppContext:
     config: AppConfig
     db: Database
+    accounts: GameAccountRepository
     instances: InstanceRepository
     characters: CharacterRepository
     marches: MarchRepository
@@ -58,6 +61,7 @@ class AppContext:
     worker_pool: WorkerPool
     scheduler: Scheduler
     configuration_service: ConfigurationService
+    secret_store: SecretStore
     closed: bool = False
 
     @classmethod
@@ -71,6 +75,7 @@ class AppContext:
         db = Database(config.database_path)
         db.initialize()
 
+        accounts = GameAccountRepository(db)
         instances = InstanceRepository(db)
         characters = CharacterRepository(db)
         marches = MarchRepository(db)
@@ -136,6 +141,7 @@ class AppContext:
         )
         character_manager = CharacterManager(characters)
         vision = VisionOcrModule()
+        secret_store = DpapiFileSecretStore()
         task_context = TaskContext(
             instances=instances,
             characters=characters,
@@ -171,6 +177,7 @@ class AppContext:
         return cls(
             config=config,
             db=db,
+            accounts=accounts,
             instances=instances,
             characters=characters,
             marches=marches,
@@ -190,6 +197,7 @@ class AppContext:
             worker_pool=worker_pool,
             scheduler=scheduler,
             configuration_service=ConfigurationService(db),
+            secret_store=secret_store,
         )
 
     def dashboard_stats(self) -> DashboardStats:
