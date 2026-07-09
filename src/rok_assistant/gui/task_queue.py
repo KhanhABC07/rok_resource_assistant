@@ -31,69 +31,22 @@ from PyQt6.QtWidgets import (
 )
 
 from rok_assistant.app import AppContext
-from rok_assistant.db.models import AUTOMATION_ACTION_TYPES, Instance, Task, TaskStep
+from rok_assistant.application.task_queue import (
+    ACTION_PARAMETER_FIELDS,
+    FIELD_DEFAULTS,
+    FIELD_PARAMETER_KEYS,
+    ReadinessView,
+    TaskQueueViewModel,
+)
+from rok_assistant.db.models import AUTOMATION_ACTION_TYPES, Instance
 from rok_assistant.gui.widgets import set_table_item
 from rok_assistant.paths import PROJECT_ROOT, TEMPLATE_DIR
 from rok_assistant.task_engine import TaskExecutionResult, TaskResult, TaskRunner
 from rok_assistant.tasks.resource_search_workflow import (
     MAX_RESOURCE_LEVEL,
     MIN_RESOURCE_LEVEL,
-    ResourceSearchWorkflow,
     ResourceType,
-    TemplateReadiness,
-    check_template_readiness,
 )
-
-
-ACTION_PARAMETER_FIELDS: dict[str, tuple[str, ...]] = {
-    "WaitTemplate": ("template", "threshold", "timeout", "polling_interval"),
-    "ClickTemplate": ("template", "threshold"),
-    "ClickCoordinates": ("x", "y"),
-    "SwipeCoordinates": ("x1", "y1", "x2", "y2", "swipe_duration"),
-    "Delay": ("delay_duration",),
-    "RepeatStart": ("count",),
-    "RepeatEnd": (),
-    "IfTemplateExists": ("template", "threshold"),
-    "Else": (),
-    "EndIf": (),
-    "AbortTask": ("reason",),
-}
-
-FIELD_PARAMETER_KEYS: dict[str, str] = {
-    "template": "template_path",
-    "threshold": "threshold",
-    "timeout": "timeout_seconds",
-    "polling_interval": "retry_interval_seconds",
-    "x": "x",
-    "y": "y",
-    "x1": "x1",
-    "y1": "y1",
-    "x2": "x2",
-    "y2": "y2",
-    "swipe_duration": "duration_ms",
-    "delay_duration": "seconds",
-    "count": "count",
-    "reason": "reason",
-}
-
-FIELD_DEFAULTS: dict[str, object] = {
-    "template": "",
-    "threshold": 0.8,
-    "timeout": 10.0,
-    "polling_interval": 1.0,
-    "x": 540,
-    "y": 960,
-    "x1": 540,
-    "y1": 1500,
-    "x2": 540,
-    "y2": 600,
-    "swipe_duration": 500,
-    "delay_duration": 1.0,
-    "count": 5,
-    "reason": "",
-}
-
-TEMPLATE_ACTION_TYPES = {"WaitTemplate", "ClickTemplate", "IfTemplateExists"}
 
 
 class TaskExecutionWorker(QObject):
@@ -115,6 +68,13 @@ class TaskQueueWidget(QWidget):
     def __init__(self, context: AppContext):
         super().__init__()
         self.context = context
+        self.view_model = TaskQueueViewModel(
+            context.automation_tasks,
+            context.instances,
+            context.tasks,
+            schedule_enabled_work=context.schedule_enabled_work,
+            task_run_history=getattr(context, "task_run_history", None),
+        )
         self.logger = logging.getLogger(self.__class__.__name__)
         self.selected_task_id: int | None = None
         self.selected_step_id: int | None = None
@@ -535,26 +495,21 @@ class TaskQueueWidget(QWidget):
         self.refresh_history_button.clicked.connect(self.refresh_run_history)
 
     def create_task(self) -> None:
-        next_number = len(self.context.automation_tasks.list_all()) + 1
-        task_id = self.context.automation_tasks.save_task(
-            Task(name=f"Task {next_number}", enabled=True)
-        )
+        task_id = self.view_model.create_task()
         self.selected_task_id = task_id
         self.refresh()
         self.select_task(task_id)
 
     def create_resource_workflow(self) -> None:
         try:
-            resource_type = self.resource_workflow_type_combo.currentData()
-            workflow = ResourceSearchWorkflow(
-                resource_type=resource_type,
+            task_id = self.view_model.create_resource_workflow(
+                resource_type=self.resource_workflow_type_combo.currentData(),
                 target_level=self.resource_workflow_level_input.value(),
                 march_required=self.resource_workflow_march_required_input.isChecked(),
                 fallback_enabled=(
                     self.resource_workflow_fallback_enabled_input.isChecked()
                 ),
             )
-            steps = workflow.to_task_steps()
         except ValueError as exc:
             message = str(exc)
             self.task_status_label.setText(f"Resource workflow error: {message}")
@@ -562,51 +517,27 @@ class TaskQueueWidget(QWidget):
             QMessageBox.warning(self, "Resource Workflow", message)
             return
 
-        task_id = self.context.automation_tasks.save_task(
-            Task(
-                name=self._resource_workflow_task_name(workflow),
-                enabled=True,
-                template_readiness_required=True,
-            )
-        )
-        for step in steps:
-            self.context.automation_tasks.add_step(
-                task_id,
-                step.action_type,
-                step.parameters or {},
-            )
-
         self.selected_task_id = task_id
         self.selected_step_id = None
         self.refresh()
         self.select_task(task_id)
 
-    @staticmethod
-    def _resource_workflow_task_name(workflow: ResourceSearchWorkflow) -> str:
-        resource_type = workflow.resource_type.value.title()
-        return f"Resource Workflow - {resource_type} L{workflow.target_level}"
-
     def save_task(self) -> None:
         if self.selected_task_id is None:
             return
-        existing = self.context.automation_tasks.get(self.selected_task_id)
-        if existing is None:
+        if not self.view_model.save_task(
+            self.selected_task_id,
+            name=self.task_name_input.text(),
+            enabled=self.task_enabled_input.isChecked(),
+        ):
             return
-        self.context.automation_tasks.save_task(
-            Task(
-                id=self.selected_task_id,
-                name=self.task_name_input.text(),
-                enabled=self.task_enabled_input.isChecked(),
-                template_readiness_required=existing.template_readiness_required,
-            )
-        )
         self.refresh()
         self.select_task(self.selected_task_id)
 
     def delete_task(self) -> None:
         if self.selected_task_id is None:
             return
-        self.context.automation_tasks.delete_task(self.selected_task_id)
+        self.view_model.delete_task(self.selected_task_id)
         self.selected_task_id = None
         self.selected_step_id = None
         self.refresh()
@@ -614,7 +545,7 @@ class TaskQueueWidget(QWidget):
     def duplicate_task(self) -> None:
         if self.selected_task_id is None:
             return
-        new_task_id = self.context.automation_tasks.duplicate_task(self.selected_task_id)
+        new_task_id = self.view_model.duplicate_task(self.selected_task_id)
         self.selected_task_id = new_task_id
         self.refresh()
         self.select_task(new_task_id)
@@ -622,7 +553,7 @@ class TaskQueueWidget(QWidget):
     def add_step(self) -> None:
         if self.selected_task_id is None:
             return
-        step_id = self.context.automation_tasks.add_step(
+        step_id = self.view_model.add_step(
             self.selected_task_id,
             self.action_type_combo.currentText(),
             self.current_step_parameters(),
@@ -634,79 +565,66 @@ class TaskQueueWidget(QWidget):
     def save_step(self) -> None:
         if self.selected_step_id is None or self.selected_task_id is None:
             return
-        step = self.context.automation_tasks.get_step(self.selected_step_id)
-        if step is None:
+        if not self.view_model.save_step(
+            task_id=self.selected_task_id,
+            step_id=self.selected_step_id,
+            action_type=self.action_type_combo.currentText(),
+            parameters=self.current_step_parameters(),
+        ):
             return
-        self.context.automation_tasks.save_step(
-            TaskStep(
-                id=step.id,
-                task_id=self.selected_task_id,
-                order=step.order,
-                action_type=self.action_type_combo.currentText(),
-                parameters=self.current_step_parameters(),
-            )
-        )
         self.refresh_steps()
         self.select_step(self.selected_step_id)
 
     def remove_step(self) -> None:
         if self.selected_step_id is None:
             return
-        self.context.automation_tasks.delete_step(self.selected_step_id)
+        self.view_model.delete_step(self.selected_step_id)
         self.selected_step_id = None
         self.refresh_steps()
 
     def move_step_up(self) -> None:
         if self.selected_step_id is None:
             return
-        self.context.automation_tasks.move_step_up(self.selected_step_id)
+        self.view_model.move_step_up(self.selected_step_id)
         self.refresh_steps()
         self.select_step(self.selected_step_id)
 
     def move_step_down(self) -> None:
         if self.selected_step_id is None:
             return
-        self.context.automation_tasks.move_step_down(self.selected_step_id)
+        self.view_model.move_step_down(self.selected_step_id)
         self.refresh_steps()
         self.select_step(self.selected_step_id)
 
     def run_task(self) -> None:
-        if self.selected_task_id is None:
-            QMessageBox.warning(self, "Tasks", "Select a task first.")
-            return
-        task = self.context.automation_tasks.get(self.selected_task_id)
-        if task is None:
-            return
-        steps = self.context.automation_tasks.list_steps(self.selected_task_id)
-        if not steps:
-            QMessageBox.warning(self, "Tasks", "Add at least one step before running.")
-            return
-        if task.template_readiness_required:
-            readiness = check_template_readiness(steps)
-            if not readiness.ready:
-                self._show_template_readiness(readiness)
+        preparation = self.view_model.prepare_task_run(
+            task_id=self.selected_task_id,
+            instance_id=self.target_instance_combo.currentData(),
+        )
+        if preparation.readiness is not None:
+            self._show_template_readiness(preparation.readiness)
+        if not preparation.ready:
+            if preparation.warning_message:
                 QMessageBox.warning(
                     self,
-                    "Resource Workflow",
-                    "Required templates are missing. Add the assets or edit the "
-                    "workflow before running.",
+                    preparation.warning_title,
+                    preparation.warning_message,
                 )
-                return
-        instance = self.current_target_instance()
-        if instance is None or instance.instance_index is None:
-            QMessageBox.warning(self, "Tasks", "Select a target MEmu instance.")
             return
 
-        self.logger.info("[TaskEngine] Run requested for task %s", task.name)
+        run = preparation.run
+        if run is None:
+            return
+        self.logger.info("[TaskEngine] Run requested for task %s", run.task.name)
         self._run_background(
             lambda: TaskRunner(
                 self.context.memu_adb_manager,
                 history_repository=getattr(self.context, "task_run_history", None),
             ).run_task(
-                task,
-                steps,
-                instance_index=instance.instance_index or 0,
-                instance_name=instance.instance_name or instance.name,
+                run.task,
+                run.steps,
+                instance_index=run.instance_index,
+                instance_name=run.instance_name,
             )
         )
 
@@ -873,7 +791,7 @@ class TaskQueueWidget(QWidget):
         self.select_step(int(item.data(Qt.ItemDataRole.UserRole)))
 
     def select_task(self, task_id: int) -> None:
-        task = self.context.automation_tasks.get(task_id)
+        task = self.view_model.get_task(task_id)
         if task is None:
             return
         self.selected_task_id = task.id
@@ -888,7 +806,7 @@ class TaskQueueWidget(QWidget):
         self.refresh_steps()
 
     def select_step(self, step_id: int) -> None:
-        step = self.context.automation_tasks.get_step(step_id)
+        step = self.view_model.get_step(step_id)
         if step is None:
             return
         self.selected_step_id = step.id
@@ -901,16 +819,16 @@ class TaskQueueWidget(QWidget):
 
     def refresh(self) -> None:
         self.refresh_targets()
-        tasks = self.context.automation_tasks.list_all()
+        tasks = self.view_model.list_task_rows()
         self.tasks_table.setRowCount(len(tasks))
         for row, task in enumerate(tasks):
             id_item = QTableWidgetItem("" if task.id is None else str(task.id))
             id_item.setData(Qt.ItemDataRole.UserRole, task.id)
             self.tasks_table.setItem(row, 0, id_item)
             set_table_item(self.tasks_table, row, 1, task.name)
-            set_table_item(self.tasks_table, row, 2, "Yes" if task.enabled else "No")
+            set_table_item(self.tasks_table, row, 2, task.enabled)
             set_table_item(self.tasks_table, row, 3, task.created_at)
-        if self.selected_task_id is not None and self.context.automation_tasks.get(
+        if self.selected_task_id is not None and self.view_model.task_exists(
             self.selected_task_id
         ):
             self.select_task(self.selected_task_id)
@@ -927,65 +845,54 @@ class TaskQueueWidget(QWidget):
             self._set_readiness_summary(True, 0)
             self._update_run_button_state()
             return
-        steps = self.context.automation_tasks.list_steps(self.selected_task_id)
-        task = self.context.automation_tasks.get(self.selected_task_id)
-        readiness_required = bool(
-            task is not None and task.template_readiness_required
-        )
-        self.steps_table.setRowCount(len(steps))
-        for row, step in enumerate(steps):
+        rows = self.view_model.list_step_rows(self.selected_task_id)
+        self.steps_table.setRowCount(len(rows))
+        for row, step in enumerate(rows):
             order_item = QTableWidgetItem(str(step.order))
             order_item.setData(Qt.ItemDataRole.UserRole, step.id)
             self.steps_table.setItem(row, 0, order_item)
             set_table_item(self.steps_table, row, 1, step.action_type)
-            set_table_item(self.steps_table, row, 2, step.parameters or {})
-            status = self._step_template_status(step, readiness_required)
-            status_item = QTableWidgetItem(status)
-            if status == "Ready":
+            set_table_item(self.steps_table, row, 2, step.parameters)
+            status_item = QTableWidgetItem(step.status)
+            if step.status_kind == "ready":
                 status_item.setForeground(QColor("#1f7a3a"))
-            elif status == "Missing Template":
+            elif step.status_kind == "missing":
                 status_item.setForeground(QColor("#b00020"))
             else:
                 status_item.setForeground(QColor("#9a5a00"))
             self.steps_table.setItem(row, 3, status_item)
-        self._refresh_template_readiness(steps)
+        self._refresh_template_readiness()
 
-    def _refresh_template_readiness(self, steps: list[TaskStep]) -> None:
+    def _refresh_template_readiness(self) -> None:
         if self.selected_task_id is None:
             self._selected_task_templates_ready = True
             self._update_run_button_state()
             return
-        task = self.context.automation_tasks.get(self.selected_task_id)
+        task = self.view_model.get_task(self.selected_task_id)
+        readiness = self.view_model.readiness_view(self.selected_task_id)
         if task is None or not task.template_readiness_required:
             self._selected_task_templates_ready = True
             self.task_status_label.setText("Ready")
             self.task_status_label.setStyleSheet("")
-            self._populate_template_readiness_table(steps, readiness_required=False)
+            self._populate_template_readiness_table(
+                readiness,
+                readiness_required=False,
+            )
             self._set_readiness_summary(True, 0)
             self._update_run_button_state()
             return
-        readiness = check_template_readiness(steps)
-        invalid_steps = [
-            step
-            for step in steps
-            if step.action_type in TEMPLATE_ACTION_TYPES
-            and not str((step.parameters or {}).get("template_path", "")).strip()
-        ]
-        self._populate_template_readiness_table(steps, readiness_required=True)
-        self._show_template_readiness(readiness, invalid_steps=invalid_steps)
+        self._populate_template_readiness_table(readiness, readiness_required=True)
+        self._show_template_readiness(readiness)
 
     def _show_template_readiness(
         self,
-        readiness: TemplateReadiness,
-        *,
-        invalid_steps: list[TaskStep] | None = None,
+        readiness: ReadinessView,
     ) -> None:
-        invalid_count = len(invalid_steps or [])
-        self._selected_task_templates_ready = readiness.ready and invalid_count == 0
+        self._selected_task_templates_ready = readiness.ready
         self._set_readiness_summary(
             self._selected_task_templates_ready,
-            len(readiness.missing_templates),
-            invalid_count,
+            readiness.missing_count,
+            readiness.invalid_count,
         )
         self.task_status_label.setText("Ready")
         self.task_status_label.setStyleSheet("")
@@ -1013,95 +920,56 @@ class TaskQueueWidget(QWidget):
 
     def _populate_template_readiness_table(
         self,
-        steps: list[TaskStep],
+        readiness: ReadinessView,
         *,
         readiness_required: bool,
     ) -> None:
-        template_steps: dict[str, list[TaskStep]] = {}
-        invalid_steps: list[TaskStep] = []
-        for step in sorted(steps, key=lambda item: item.order):
-            if step.action_type not in TEMPLATE_ACTION_TYPES:
-                continue
-            template_path = str(
-                (step.parameters or {}).get("template_path", "")
-            ).strip()
-            if template_path:
-                template_steps.setdefault(template_path, []).append(step)
-            else:
-                invalid_steps.append(step)
-
-        rows = list(template_steps.items())
-        self.template_readiness_table.setRowCount(len(rows) + len(invalid_steps))
-        for row, (template_path, matching_steps) in enumerate(rows):
-            exists = self._template_path_exists(template_path)
-            status = "Ready" if exists else "Missing"
-            template_name = Path(template_path).stem.replace("_", " ").title()
-            set_table_item(self.template_readiness_table, row, 0, template_name)
-            set_table_item(self.template_readiness_table, row, 1, template_path)
-            status_item = QTableWidgetItem(status)
-            status_item.setForeground(
-                QColor("#1f7a3a" if exists else "#b00020")
+        self.template_readiness_table.setRowCount(len(readiness.rows))
+        for row, template_row in enumerate(readiness.rows):
+            set_table_item(
+                self.template_readiness_table,
+                row,
+                0,
+                template_row.template_name,
             )
+            set_table_item(
+                self.template_readiness_table,
+                row,
+                1,
+                template_row.template_path,
+            )
+            status_item = QTableWidgetItem(template_row.status)
+            if template_row.status_kind == "ready":
+                status_item.setForeground(QColor("#1f7a3a"))
+            elif template_row.status_kind == "missing":
+                status_item.setForeground(QColor("#b00020"))
+            else:
+                status_item.setForeground(QColor("#9a5a00"))
             self.template_readiness_table.setItem(row, 2, status_item)
-            if not exists:
+            if template_row.status_kind == "missing":
                 browse_button = QPushButton("Browse")
                 browse_button.setProperty(
                     "template_step_ids",
-                    [step.id for step in matching_steps if step.id is not None],
+                    list(template_row.step_ids),
                 )
                 browse_button.clicked.connect(
-                    lambda _checked=False, path=template_path: (
+                    lambda _checked=False, path=template_row.template_path: (
                         self.browse_readiness_template(path)
                     )
                 )
                 self.template_readiness_table.setCellWidget(
                     row, 3, browse_button
                 )
-
-        start_row = len(rows)
-        for offset, step in enumerate(invalid_steps):
-            row = start_row + offset
-            set_table_item(
-                self.template_readiness_table,
-                row,
-                0,
-                f"Step {step.order}",
-            )
-            set_table_item(self.template_readiness_table, row, 1, "")
-            status_item = QTableWidgetItem("Invalid")
-            status_item.setForeground(QColor("#9a5a00"))
-            self.template_readiness_table.setItem(row, 2, status_item)
-            browse_button = QPushButton("Browse")
-            browse_button.clicked.connect(
-                lambda _checked=False, step_id=step.id: (
-                    self.browse_readiness_template("", step_id=step_id)
+            elif template_row.status_kind == "invalid":
+                browse_button = QPushButton("Browse")
+                browse_button.clicked.connect(
+                    lambda _checked=False, row_step_id=template_row.invalid_step_id: (
+                        self.browse_readiness_template("", step_id=row_step_id)
+                    )
                 )
-            )
-            self.template_readiness_table.setCellWidget(row, 3, browse_button)
+                self.template_readiness_table.setCellWidget(row, 3, browse_button)
 
         self.template_readiness_table.setEnabled(readiness_required)
-
-    def _step_template_status(
-        self,
-        step: TaskStep,
-        readiness_required: bool,
-    ) -> str:
-        if not readiness_required or step.action_type not in TEMPLATE_ACTION_TYPES:
-            return "Ready"
-        template_path = str(
-            (step.parameters or {}).get("template_path", "")
-        ).strip()
-        if not template_path:
-            return "Invalid"
-        if not self._template_path_exists(template_path):
-            return "Missing Template"
-        return "Ready"
-
-    @staticmethod
-    def _template_path_exists(template_path: str) -> bool:
-        path = Path(template_path)
-        resolved = path if path.is_absolute() else PROJECT_ROOT / path
-        return resolved.is_file()
 
     def recheck_templates(self) -> None:
         self.refresh_steps()
@@ -1123,29 +991,12 @@ class TaskQueueWidget(QWidget):
         if not selected_path or self.selected_task_id is None:
             return
 
-        for step in self.context.automation_tasks.list_steps(
-            self.selected_task_id
-        ):
-            current_path = str(
-                (step.parameters or {}).get("template_path", "")
-            ).strip()
-            if step_id is not None:
-                matches = step.id == step_id
-            else:
-                matches = current_path == template_path
-            if not matches:
-                continue
-            parameters = dict(step.parameters or {})
-            parameters["template_path"] = selected_path
-            self.context.automation_tasks.save_step(
-                TaskStep(
-                    id=step.id,
-                    task_id=step.task_id,
-                    order=step.order,
-                    action_type=step.action_type,
-                    parameters=parameters,
-                )
-            )
+        self.view_model.update_template_paths(
+            task_id=self.selected_task_id,
+            selected_path=selected_path,
+            template_path=template_path,
+            step_id=step_id,
+        )
         self.refresh_steps()
         if self.selected_step_id is not None:
             self.select_step(self.selected_step_id)
@@ -1163,11 +1014,8 @@ class TaskQueueWidget(QWidget):
     def refresh_targets(self) -> None:
         current_id = self.target_instance_combo.currentData()
         self.target_instance_combo.clear()
-        for instance in self.context.instances.list_all():
-            if instance.instance_index is None:
-                continue
-            label = f"{instance.instance_index} - {instance.instance_name or instance.name}"
-            self.target_instance_combo.addItem(label, instance.id)
+        for instance in self.view_model.list_target_rows():
+            self.target_instance_combo.addItem(instance.label, instance.id)
         if current_id is not None:
             for index in range(self.target_instance_combo.count()):
                 if self.target_instance_combo.itemData(index) == current_id:
@@ -1178,15 +1026,15 @@ class TaskQueueWidget(QWidget):
         instance_id = self.target_instance_combo.currentData()
         if instance_id is None:
             return None
-        return self.context.instances.get(int(instance_id))
+        return self.view_model.get_instance(int(instance_id))
 
     def create_scheduled_tasks(self) -> None:
-        created = self.context.schedule_enabled_work()
+        created = self.view_model.create_scheduled_tasks()
         QMessageBox.information(self, "Tasks Created", f"Created {created} task(s).")
         self.refresh_scheduler_queue()
 
     def refresh_scheduler_queue(self) -> None:
-        tasks = self.context.tasks.list_recent(limit=300)
+        tasks = self.view_model.list_scheduler_rows(limit=300)
         self.scheduler_table.setRowCount(len(tasks))
         for row, task in enumerate(tasks):
             set_table_item(self.scheduler_table, row, 0, task.id)
@@ -1201,12 +1049,8 @@ class TaskQueueWidget(QWidget):
             set_table_item(self.scheduler_table, row, 9, task.error_message)
 
     def refresh_run_history(self) -> None:
-        history_repository = getattr(self.context, "task_run_history", None)
-        if history_repository is None:
-            self.run_history_table.setRowCount(0)
-            return
-
-        runs = history_repository.list_recent(limit=200)
+        self.view_model.task_run_history = getattr(self.context, "task_run_history", None)
+        runs = self.view_model.list_run_history_rows(limit=200)
         self.run_history_table.setRowCount(len(runs))
         for row, run in enumerate(runs):
             set_table_item(self.run_history_table, row, 0, run.task_name)
@@ -1221,7 +1065,7 @@ class TaskQueueWidget(QWidget):
                 self.run_history_table,
                 row,
                 6,
-                run.error_message or run.abort_reason,
+                run.error_or_abort_reason,
             )
 
     def _run_background(self, callback: Callable[[], TaskExecutionResult]) -> None:
