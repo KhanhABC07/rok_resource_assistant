@@ -52,6 +52,9 @@ def test_packaging_script_generates_checksum_and_sbom() -> None:
     assert "release.json" in script
     assert "ValidateSet(\"staging\", \"canary\", \"stable\")" in script
     assert "Compress-Archive" in script
+    assert "Prepare release output directory" in script
+    assert "New-Item -ItemType Directory -Force -Path $distPath" in script
+    assert "Move-Item -LiteralPath $pyinstallerDistPath -Destination $distPath" in script
 
 
 def test_gitignore_excludes_generated_packaging_outputs() -> None:
