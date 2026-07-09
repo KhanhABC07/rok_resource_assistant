@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
 
 from rok_assistant.app import AppContext
 from rok_assistant.emulator import DEFAULT_MEMU_INSTALL_PATH
+from rok_assistant.gui.style import muted_text_qss
+from rok_assistant.gui.widgets import apply_button_variant
 
 
 class SettingsWidget(QWidget):
@@ -37,6 +39,7 @@ class SettingsWidget(QWidget):
         self.preferred_levels = QLineEdit()
         self.memu_path = QLineEdit()
         self.browse_memu_button = QPushButton("Browse")
+        apply_button_variant(self.browse_memu_button, "secondary")
 
         memu_path_row = QHBoxLayout()
         memu_path_row.addWidget(self.memu_path)
@@ -53,13 +56,14 @@ class SettingsWidget(QWidget):
 
         self.save_button = QPushButton("Save Settings")
         self.reload_button = QPushButton("Reload")
+        apply_button_variant(self.reload_button, "secondary")
         buttons = QHBoxLayout()
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.reload_button)
         buttons.addStretch(1)
 
         note = QLabel("Worker count changes apply the next time the scheduler starts.")
-        note.setStyleSheet("color: #5c6675")
+        note.setStyleSheet(muted_text_qss())
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)

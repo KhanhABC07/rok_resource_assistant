@@ -15,7 +15,12 @@ from PyQt6.QtWidgets import (
 
 from rok_assistant.app import AppContext
 from rok_assistant.db.models import Character
-from rok_assistant.gui.widgets import set_table_item
+from rok_assistant.gui.widgets import (
+    apply_button_variant,
+    configure_table,
+    set_empty_table_state,
+    set_table_item,
+)
 
 
 class CharacterManagerWidget(QWidget):
@@ -51,6 +56,8 @@ class CharacterManagerWidget(QWidget):
         self.save_button = QPushButton("Save")
         self.clear_button = QPushButton("Clear")
         self.delete_button = QPushButton("Delete")
+        apply_button_variant(self.clear_button, "secondary")
+        apply_button_variant(self.delete_button, "danger")
         buttons = QHBoxLayout()
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.clear_button)
@@ -60,7 +67,7 @@ class CharacterManagerWidget(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["ID", "Instance", "Account", "Character", "Enabled", "Help", "Donate", "Gifts"]
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        configure_table(self.table)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -100,6 +107,7 @@ class CharacterManagerWidget(QWidget):
             set_table_item(
                 self.table, row, 7, "Yes" if character.gift_collection_enabled else "No"
             )
+        set_empty_table_state(self.table, "No characters have been configured.")
 
     def load_selected(self, row: int, _column: int) -> None:
         item = self.table.item(row, 0)

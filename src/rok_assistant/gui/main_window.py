@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -34,6 +35,10 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(APP_STYLE)
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        self.tabs.setMovable(False)
+        self.tabs.setUsesScrollButtons(True)
         self.dashboard = DashboardWidget(context)
         self.instances = InstanceManagerWidget(context)
         self.automation = AutomationWidget(context)
@@ -44,15 +49,20 @@ class MainWindow(QMainWindow):
         self.settings = SettingsWidget(context)
         self.logs = LogViewerWidget(context)
 
-        self.tabs.addTab(self.dashboard, "Dashboard")
-        self.tabs.addTab(self.instances, "Instances")
-        self.tabs.addTab(self.automation, "Automation")
-        self.tabs.addTab(self.accounts, "Accounts")
-        self.tabs.addTab(self.characters, "Characters")
-        self.tabs.addTab(self.marches, "Marches")
-        self.tabs.addTab(self.tasks, "Tasks")
-        self.tabs.addTab(self.settings, "Settings")
-        self.tabs.addTab(self.logs, "Logs")
+        navigation_tabs = (
+            (self.dashboard, "Dashboard", "Scheduler and automation health overview"),
+            (self.instances, "Instances", "MEmu instance discovery and controls"),
+            (self.automation, "Automation", "Image recognition and quick action testing"),
+            (self.accounts, "Accounts", "Game account configuration"),
+            (self.characters, "Characters", "Character assignments and alliance options"),
+            (self.marches, "Marches", "March runtime state for each character"),
+            (self.tasks, "Tasks", "Automation task editor, scheduler queue, and run history"),
+            (self.settings, "Settings", "Application and scheduler settings"),
+            (self.logs, "Logs", "Recent application log output"),
+        )
+        for widget, label, tooltip in navigation_tabs:
+            index = self.tabs.addTab(widget, label)
+            self.tabs.setTabToolTip(index, tooltip)
         self.setCentralWidget(self.tabs)
         self.automation.open_instances_requested.connect(
             lambda: self.tabs.setCurrentWidget(self.instances)
@@ -63,7 +73,9 @@ class MainWindow(QMainWindow):
 
     def _build_actions(self) -> None:
         toolbar = QToolBar("Main")
+        toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.addToolBar(toolbar)
 
         start_action = QAction("Start Scheduler", self)
@@ -82,16 +94,15 @@ class MainWindow(QMainWindow):
         backup_action.triggered.connect(self.backup_database)
         restore_action.triggered.connect(self.restore_database)
 
-        for action in (
-            start_action,
-            stop_action,
-            create_action,
-            export_action,
-            import_action,
-            backup_action,
-            restore_action,
-        ):
-            toolbar.addAction(action)
+        toolbar.addAction(start_action)
+        toolbar.addAction(stop_action)
+        toolbar.addAction(create_action)
+        toolbar.addSeparator()
+        toolbar.addAction(export_action)
+        toolbar.addAction(import_action)
+        toolbar.addSeparator()
+        toolbar.addAction(backup_action)
+        toolbar.addAction(restore_action)
 
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction(export_action)

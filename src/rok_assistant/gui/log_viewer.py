@@ -4,6 +4,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
 
 from rok_assistant.app import AppContext
+from rok_assistant.gui.widgets import SectionCard, apply_button_variant
 
 
 class LogViewerWidget(QWidget):
@@ -11,9 +12,13 @@ class LogViewerWidget(QWidget):
         super().__init__()
         self.context = context
         self.viewer = QPlainTextEdit()
+        self.viewer.setObjectName("logViewer")
         self.viewer.setReadOnly(True)
+        self.viewer.setPlaceholderText("No log entries yet.")
         self.refresh_button = QPushButton("Refresh")
         self.clear_button = QPushButton("Clear Log")
+        apply_button_variant(self.refresh_button, "secondary")
+        apply_button_variant(self.clear_button, "danger")
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.refresh_button)
@@ -21,8 +26,11 @@ class LogViewerWidget(QWidget):
         buttons.addStretch(1)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(buttons)
-        layout.addWidget(self.viewer)
+        layout.setContentsMargins(12, 12, 12, 12)
+        log_card = SectionCard("Logs", "Recent application log output.")
+        log_card.addLayout(buttons)
+        log_card.addWidget(self.viewer, 1)
+        layout.addWidget(log_card, 1)
 
         self.refresh_button.clicked.connect(self.refresh)
         self.clear_button.clicked.connect(self.clear_log)

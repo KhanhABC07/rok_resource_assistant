@@ -15,13 +15,18 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from rok_assistant.app import AppContext
 from rok_assistant.db.models import Instance
+from rok_assistant.gui.widgets import (
+    apply_button_variant,
+    configure_table,
+    set_empty_table_state,
+    set_table_item,
+)
 
 
 class MEmuOperationWorker(QObject):
@@ -76,6 +81,14 @@ class InstanceManagerWidget(QWidget):
         self.capture_screenshot_button = QPushButton("Capture Screenshot")
         self.save_button = QPushButton("Save")
         self.clear_button = QPushButton("Clear")
+        for button in (
+            self.refresh_status_button,
+            self.refresh_adb_button,
+            self.clear_button,
+        ):
+            apply_button_variant(button, "secondary")
+        for button in (self.stop_selected_button, self.stop_all_button):
+            apply_button_variant(button, "danger")
 
         buttons = QHBoxLayout()
         for button in (
@@ -103,7 +116,10 @@ class InstanceManagerWidget(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        configure_table(
+            self.table,
+            selection_mode=QAbstractItemView.SelectionMode.ExtendedSelection,
+        )
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -140,6 +156,7 @@ class InstanceManagerWidget(QWidget):
             self._set_table_item(self.table, row, 4, instance.adb_serial)
             self._set_table_item(self.table, row, 5, "Yes" if instance.adb_connected else "No")
             self._set_table_item(self.table, row, 6, "Yes" if instance.enabled else "No")
+        set_empty_table_state(self.table, "No MEmu instances have been imported.")
         self.update_counts(rows)
 
     def scan_memu(self) -> None:
@@ -600,6 +617,4 @@ class InstanceManagerWidget(QWidget):
         column: int,
         value: object,
     ) -> QTableWidgetItem:
-        item = QTableWidgetItem("" if value is None else str(value))
-        table.setItem(row, column, item)
-        return item
+        return set_table_item(table, row, column, value)

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QTableWidget, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QGridLayout, QTableWidget, QVBoxLayout, QWidget
 
 from rok_assistant.app import AppContext
-from rok_assistant.gui.widgets import MetricLabel, set_table_item
+from rok_assistant.gui.widgets import (
+    MetricLabel,
+    SectionCard,
+    configure_table,
+    set_empty_table_state,
+    set_table_item,
+)
 
 
 class DashboardWidget(QWidget):
@@ -25,8 +31,10 @@ class DashboardWidget(QWidget):
         self.incidents = MetricLabel("Open Incidents")
         self.last_run = MetricLabel("Last Run")
 
-        metrics = QHBoxLayout()
-        for widget in (
+        metric_grid = QGridLayout()
+        metric_grid.setHorizontalSpacing(12)
+        metric_grid.setVerticalSpacing(12)
+        for index, widget in enumerate((
             self.active_workers,
             self.running_instances,
             self.total_characters,
@@ -40,19 +48,29 @@ class DashboardWidget(QWidget):
             self.concurrency,
             self.incidents,
             self.last_run,
-        ):
-            metrics.addWidget(widget)
+        )):
+            metric_grid.addWidget(widget, index // 4, index % 4)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
             ["Instance", "Character", "Task", "Status", "Next Action"]
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        configure_table(self.table, min_height=320)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(metrics)
-        layout.addWidget(QLabel("Task Overview"))
-        layout.addWidget(self.table)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        metrics_card = SectionCard(
+            "Operational Summary",
+            "Current scheduler, instance, task, and incident health.",
+        )
+        metrics_card.addLayout(metric_grid)
+        layout.addWidget(metrics_card)
+
+        overview_card = SectionCard("Task Overview", "Recent scheduled work by target.")
+        overview_card.addWidget(self.table, 1)
+        layout.addWidget(overview_card, 1)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -84,3 +102,4 @@ class DashboardWidget(QWidget):
             set_table_item(self.table, row, 2, label)
             set_table_item(self.table, row, 3, task.status)
             set_table_item(self.table, row, 4, task.scheduled_for)
+        set_empty_table_state(self.table, "No scheduled tasks to display.")
