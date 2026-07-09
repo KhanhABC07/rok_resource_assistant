@@ -35,18 +35,18 @@ from rok_assistant.application.task_queue import (
     ACTION_PARAMETER_FIELDS,
     FIELD_DEFAULTS,
     FIELD_PARAMETER_KEYS,
+    MAX_RESOURCE_LEVEL,
+    MIN_RESOURCE_LEVEL,
     ReadinessView,
+    ResourceType,
+    TaskExecutionResult,
+    TaskExecutionService,
     TaskQueueViewModel,
+    TaskResult,
 )
 from rok_assistant.db.models import AUTOMATION_ACTION_TYPES, Instance
 from rok_assistant.gui.widgets import set_table_item
 from rok_assistant.paths import PROJECT_ROOT, TEMPLATE_DIR
-from rok_assistant.task_engine import TaskExecutionResult, TaskResult, TaskRunner
-from rok_assistant.tasks.resource_search_workflow import (
-    MAX_RESOURCE_LEVEL,
-    MIN_RESOURCE_LEVEL,
-    ResourceType,
-)
 
 
 class TaskExecutionWorker(QObject):
@@ -616,16 +616,12 @@ class TaskQueueWidget(QWidget):
         if run is None:
             return
         self.logger.info("[TaskEngine] Run requested for task %s", run.task.name)
+        service = TaskExecutionService(
+            self.context.memu_adb_manager,
+            history_repository=getattr(self.context, "task_run_history", None),
+        )
         self._run_background(
-            lambda: TaskRunner(
-                self.context.memu_adb_manager,
-                history_repository=getattr(self.context, "task_run_history", None),
-            ).run_task(
-                run.task,
-                run.steps,
-                instance_index=run.instance_index,
-                instance_name=run.instance_name,
-            )
+            lambda: service.run_task(run)
         )
 
     def browse_template(self) -> None:

@@ -6,7 +6,10 @@ from typing import Callable, Protocol
 
 from rok_assistant.db.models import Instance, ScheduledTask, Task, TaskRunHistory, TaskStep
 from rok_assistant.paths import PROJECT_ROOT
+from rok_assistant.task_engine import TaskExecutionResult, TaskResult, TaskRunner
 from rok_assistant.tasks.resource_search_workflow import (
+    MAX_RESOURCE_LEVEL,
+    MIN_RESOURCE_LEVEL,
     ResourceSearchWorkflow,
     ResourceType,
     check_template_readiness,
@@ -194,6 +197,28 @@ class TaskRunPreparation:
     @property
     def ready(self) -> bool:
         return self.run is not None
+
+
+class TaskExecutionService:
+    def __init__(
+        self,
+        adb_manager: object,
+        *,
+        history_repository: object | None = None,
+    ) -> None:
+        self.adb_manager = adb_manager
+        self.history_repository = history_repository
+
+    def run_task(self, run: PreparedTaskRun) -> TaskExecutionResult:
+        return TaskRunner(
+            self.adb_manager,
+            history_repository=self.history_repository,
+        ).run_task(
+            run.task,
+            run.steps,
+            instance_index=run.instance_index,
+            instance_name=run.instance_name,
+        )
 
 
 class TaskQueueViewModel:
