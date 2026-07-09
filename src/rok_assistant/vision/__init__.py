@@ -3,6 +3,8 @@ from .evidence_capture import (
     EvidenceCaptureResult,
     EvidenceMetadata,
     EvidenceReference,
+    EvidenceRetentionPolicy,
+    EvidenceRetentionResult,
     EvidenceStore,
     FileSystemEvidenceStore,
 )
@@ -83,6 +85,8 @@ __all__ = [
     "EvidenceCaptureResult",
     "EvidenceMetadata",
     "EvidenceReference",
+    "EvidenceRetentionPolicy",
+    "EvidenceRetentionResult",
     "EvidenceStore",
     "FileSystemEvidenceStore",
     "ImageNormalizationResult",

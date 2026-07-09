@@ -29,12 +29,14 @@ from rok_assistant.emulator import (
 )
 from rok_assistant.export_import import ConfigurationService
 from rok_assistant.logging_setup import configure_logging
-from rok_assistant.paths import ensure_runtime_dirs
+from rok_assistant.observability import DashboardMetricsService, SupportBundleExporter
+from rok_assistant.paths import ensure_runtime_dirs, resolve_project_path
 from rok_assistant.recovery import ErrorRecoveryPolicy
 from rok_assistant.scheduler import Scheduler, WorkerPool
 from rok_assistant.security import DpapiFileSecretStore, SecretStore
 from rok_assistant.tasks import TaskContext, TaskManager
 from rok_assistant.vision import VisionOcrModule
+from rok_assistant.vision import EvidenceRetentionPolicy, FileSystemEvidenceStore
 
 
 @dataclass
@@ -62,6 +64,8 @@ class AppContext:
     scheduler: Scheduler
     configuration_service: ConfigurationService
     secret_store: SecretStore
+    dashboard_metrics: DashboardMetricsService
+    support_bundles: SupportBundleExporter
     closed: bool = False
 
     @classmethod
@@ -113,6 +117,15 @@ class AppContext:
                 ),
                 "watchdog.same_screen_max_observations": config.get(
                     "watchdog.same_screen_max_observations", 3
+                ),
+                "observability.evidence_retention_days": config.get(
+                    "observability.evidence_retention_days", 14
+                ),
+                "observability.evidence_retention_max_files": config.get(
+                    "observability.evidence_retention_max_files", 500
+                ),
+                "observability.support_bundle_dir": config.get(
+                    "observability.support_bundle_dir", "runtime/support_bundles"
                 ),
                 "emulator.memu_install_path": config.get(
                     "emulator.memu_install_path", DEFAULT_MEMU_INSTALL_PATH
@@ -174,6 +187,13 @@ class AppContext:
             settings=settings,
             circuit_breakers=circuit_breakers,
         )
+        FileSystemEvidenceStore(resolve_project_path("runtime/screenshots")).apply_retention(
+            EvidenceRetentionPolicy(
+                max_age_days=settings.get_int("observability.evidence_retention_days", 14),
+                max_files=settings.get_int("observability.evidence_retention_max_files", 500),
+            )
+        )
+        dashboard_metrics = DashboardMetricsService(db)
         return cls(
             config=config,
             db=db,
@@ -198,15 +218,21 @@ class AppContext:
             scheduler=scheduler,
             configuration_service=ConfigurationService(db),
             secret_store=secret_store,
+            dashboard_metrics=dashboard_metrics,
+            support_bundles=SupportBundleExporter(
+                db=db,
+                config=config,
+                output_dir=resolve_project_path(
+                    settings.get("observability.support_bundle_dir", "runtime/support_bundles")
+                ),
+            ),
         )
 
     def dashboard_stats(self) -> DashboardStats:
-        return DashboardStats(
+        return self.dashboard_metrics.collect(
             active_workers=self.scheduler.active_workers,
             running_instances=self.emulator_manager.running_count(),
-            total_characters=self.characters.count_all(),
-            pending_tasks=self.tasks.count_pending(),
-            next_scheduled_task=self.tasks.next_scheduled(),
+            max_workers=self.worker_pool.max_workers,
         )
 
     def schedule_enabled_work(self) -> int:

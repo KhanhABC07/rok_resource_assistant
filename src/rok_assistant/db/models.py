@@ -420,3 +420,14 @@ class DashboardStats:
     total_characters: int = 0
     pending_tasks: int = 0
     next_scheduled_task: str = "-"
+    success_count: int = 0
+    failure_count: int = 0
+    blocked_retry_count: int = 0
+    queue_depth: int = 0
+    active_jobs: int = 0
+    concurrency_in_use: int = 0
+    concurrency_limit: int = 0
+    open_incident_count: int = 0
+    recent_incident_count: int = 0
+    success_rate: float = 0.0
+    last_run_at: str = "-"

@@ -12,6 +12,11 @@ from .paths import CONFIG_DIR, resolve_project_path
 DEFAULT_CONFIG: dict[str, Any] = {
     "database": {"path": "runtime/rok_assistant.sqlite3"},
     "logging": {"level": "INFO", "file": "runtime/logs/app.log"},
+    "observability": {
+        "evidence_retention_days": 14,
+        "evidence_retention_max_files": 500,
+        "support_bundle_dir": "runtime/support_bundles",
+    },
     "emulator": {"memu_install_path": r"C:\MEmu\Microvirt\MEmu"},
     "scheduler": {
         "max_workers": 5,

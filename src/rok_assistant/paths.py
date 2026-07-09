@@ -9,11 +9,12 @@ RUNTIME_DIR = PROJECT_ROOT / "runtime"
 LOG_DIR = RUNTIME_DIR / "logs"
 BACKUP_DIR = RUNTIME_DIR / "backups"
 SCREENSHOT_DIR = RUNTIME_DIR / "screenshots"
+SUPPORT_BUNDLE_DIR = RUNTIME_DIR / "support_bundles"
 TEMPLATE_DIR = RUNTIME_DIR / "assets" / "templates"
 
 
 def ensure_runtime_dirs() -> None:
-    for directory in (RUNTIME_DIR, LOG_DIR, BACKUP_DIR, SCREENSHOT_DIR, TEMPLATE_DIR):
+    for directory in (RUNTIME_DIR, LOG_DIR, BACKUP_DIR, SCREENSHOT_DIR, SUPPORT_BUNDLE_DIR, TEMPLATE_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 

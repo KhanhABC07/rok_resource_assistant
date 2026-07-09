@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol
 import hashlib
@@ -167,6 +167,24 @@ class EvidenceCaptureResult:
         return self.reference is not None and self.metadata is not None and not self.diagnostics
 
 
+@dataclass(frozen=True)
+class EvidenceRetentionPolicy:
+    max_age_days: int = 14
+    max_files: int = 500
+
+    def __post_init__(self) -> None:
+        _require_non_negative_int(self.max_age_days, "max age days")
+        _require_non_negative_int(self.max_files, "max files")
+
+
+@dataclass(frozen=True)
+class EvidenceRetentionResult:
+    inspected: int = 0
+    deleted: int = 0
+    kept: int = 0
+    failed: int = 0
+
+
 class EvidenceStore(Protocol):
     def capture(self, request: EvidenceCaptureRequest) -> EvidenceCaptureResult:
         ...
@@ -298,6 +316,65 @@ class FileSystemEvidenceStore:
                 )
             )
         return EvidenceCaptureResult(reference=reference, metadata=metadata)
+
+    def apply_retention(self, policy: EvidenceRetentionPolicy) -> EvidenceRetentionResult:
+        try:
+            root = self._resolved_root()
+        except (OSError, ValueError):
+            return EvidenceRetentionResult(failed=1)
+        entries = self._retention_entries(root)
+        cutoff = self.clock().astimezone(UTC) - timedelta(days=policy.max_age_days)
+        to_delete: set[Path] = set()
+        if policy.max_age_days > 0:
+            to_delete.update(entry[1] for entry in entries if entry[0] < cutoff)
+        if policy.max_files > 0 and len(entries) > policy.max_files:
+            to_delete.update(entry[1] for entry in entries[:-policy.max_files])
+        deleted = 0
+        failed = 0
+        for metadata_path in sorted(to_delete):
+            if self._delete_evidence_pair(root, metadata_path):
+                deleted += 1
+            else:
+                failed += 1
+        return EvidenceRetentionResult(
+            inspected=len(entries),
+            deleted=deleted,
+            kept=max(0, len(entries) - deleted),
+            failed=failed,
+        )
+
+    def _retention_entries(self, root: Path) -> list[tuple[datetime, Path]]:
+        entries: list[tuple[datetime, Path]] = []
+        for metadata_path in root.rglob("*.json"):
+            try:
+                resolved = metadata_path.resolve()
+                if not _is_relative_to(resolved, root):
+                    continue
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or payload.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
+                    continue
+                captured_at = _parse_utc_timestamp(str(payload.get("captured_at", "")))
+                image_path = metadata_path.with_suffix(".png")
+                if not image_path.is_file():
+                    continue
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            entries.append((captured_at, metadata_path))
+        return sorted(entries, key=lambda item: (item[0], str(item[1])))
+
+    @staticmethod
+    def _delete_evidence_pair(root: Path, metadata_path: Path) -> bool:
+        try:
+            image_path = metadata_path.with_suffix(".png")
+            for path in (metadata_path, image_path):
+                resolved = path.resolve()
+                if not _is_relative_to(resolved, root):
+                    return False
+            metadata_path.unlink(missing_ok=True)
+            image_path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
 
     def _evidence_directory(
         self,
@@ -866,6 +943,11 @@ def _require_positive_int(value: Any, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a positive integer.")
 
 
+def _require_non_negative_int(value: Any, field_name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer.")
+
+
 def _require_score(value: Any, field_name: str) -> float:
     score = _require_finite_number(value, field_name)
     if score < 0.0 or score > 1.0:
@@ -895,3 +977,12 @@ def _unlink_if_exists(path: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    if not value.strip():
+        raise ValueError("timestamp is required")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return parsed.astimezone(UTC)
