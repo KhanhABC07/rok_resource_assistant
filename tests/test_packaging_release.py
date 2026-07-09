@@ -24,6 +24,13 @@ def test_pyinstaller_spec_references_entry_point_and_assets() -> None:
     assert ".sqlite" not in spec
 
 
+def test_pyinstaller_spec_builds_windowed_app_without_console() -> None:
+    spec = (REPO_ROOT / "packaging" / "pyinstaller" / "rok_resource_assistant.spec").read_text(encoding="utf-8")
+
+    assert "console=False" in spec
+    assert "console=True" not in spec
+
+
 def test_windows_ci_runs_tests_builds_artifact_and_uploads_release_outputs() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "windows-ci.yml").read_text(encoding="utf-8")
 

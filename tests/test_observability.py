@@ -5,6 +5,7 @@ import logging
 import tempfile
 import unittest
 import zipfile
+from logging.handlers import QueueHandler
 from pathlib import Path
 
 from tests.db_helpers import SRC_ROOT  # noqa: F401
@@ -19,16 +20,13 @@ from rok_assistant.db.repositories import (
     SettingsRepository,
     TaskRunHistoryRepository,
 )
-from rok_assistant.logging_setup import configure_logging, log_context
-from rok_assistant.observability import DashboardMetricsService, SupportBundleExporter
+from rok_assistant.logging_setup import configure_logging, log_context, shutdown_logging
+from rok_assistant.observability import DashboardMetricsService, SupportBundleExporter, read_text_tail
 
 
 class ObservabilityTest(unittest.TestCase):
     def tearDown(self) -> None:
-        root = logging.getLogger()
-        for handler in root.handlers[:]:
-            root.removeHandler(handler)
-            handler.close()
+        shutdown_logging()
 
     def test_json_log_event_shape_correlation_and_redaction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -41,10 +39,10 @@ class ObservabilityTest(unittest.TestCase):
                     extra={"feature_key": "gathering"},
                 )
 
-            for handler in logging.getLogger().handlers:
-                handler.flush()
+            self.assertEqual(1, len(logging.getLogger().handlers))
+            self.assertIsInstance(logging.getLogger().handlers[0], QueueHandler)
+            shutdown_logging()
             event = json.loads(log_file.read_text(encoding="utf-8").splitlines()[0])
-            self._close_root_handlers()
 
             self.assertEqual("INFO", event["level"])
             self.assertEqual("obs-test", event["logger"])
@@ -56,6 +54,16 @@ class ObservabilityTest(unittest.TestCase):
             self.assertIn("timestamp", event)
             self.assertNotIn("plain", json.dumps(event))
             self.assertIn("[REDACTED]", event["message"])
+
+    def test_json_log_flushes_safely_on_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "app.log"
+            configure_logging(log_file, "INFO")
+
+            logging.getLogger("obs-test").info("queued log event")
+            shutdown_logging()
+
+            self.assertIn("queued log event", log_file.read_text(encoding="utf-8"))
 
     def test_dashboard_metrics_aggregate_existing_runtime_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -121,6 +129,34 @@ class ObservabilityTest(unittest.TestCase):
             self.assertEqual("2026-07-09T00:02:00", stats.last_run_at)
             db.close()
 
+    def test_dashboard_metrics_cache_reuses_recent_snapshot_until_forced_or_expired(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            now = [100.0]
+            db = self._db(temp_dir)
+            instances = InstanceRepository(db)
+            characters = CharacterRepository(db)
+            service = DashboardMetricsService(db, cache_seconds=10.0, clock=lambda: now[0])
+
+            initial = service.collect(active_workers=0, running_instances=0, max_workers=5)
+            instance_id = instances.save(Instance(name="MEmu0", instance_name="MEmu0"))
+            characters.save(Character(name="Farm01", instance_id=instance_id))
+
+            cached = service.collect(active_workers=0, running_instances=0, max_workers=5)
+            forced = service.collect(
+                active_workers=0,
+                running_instances=0,
+                max_workers=5,
+                force_refresh=True,
+            )
+            now[0] = 111.0
+            expired = service.collect(active_workers=0, running_instances=0, max_workers=5)
+
+            self.assertEqual(0, initial.total_characters)
+            self.assertEqual(0, cached.total_characters)
+            self.assertEqual(1, forced.total_characters)
+            self.assertEqual(1, expired.total_characters)
+            db.close()
+
     def test_support_bundle_contains_redacted_config_logs_incidents_and_evidence_references(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -135,8 +171,10 @@ class ObservabilityTest(unittest.TestCase):
                 )
             )
             log_dir = root / "logs"
-            log_dir.mkdir()
-            (log_dir / "app.log").write_text("token=secret-token\n", encoding="utf-8")
+            log_file = log_dir / "app.log"
+            configure_logging(log_file, "INFO")
+            logging.getLogger("obs-test").info("token=secret-token")
+            shutdown_logging()
             config = AppConfig(
                 path=root / "app_config.json",
                 data={**DEFAULT_CONFIG, "credentials": {"password": "secret"}},
@@ -172,18 +210,21 @@ class ObservabilityTest(unittest.TestCase):
             self.assertIn("[REDACTED]", log_content)
             db.close()
 
+    def test_read_text_tail_returns_recent_log_content_without_full_file_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "app.log"
+            log_file.write_text("old-line\n" + ("x" * 200) + "\ntail-line\n", encoding="utf-8")
+
+            tail = read_text_tail(log_file, max_bytes=32)
+
+            self.assertIn("tail-line", tail)
+            self.assertNotIn("old-line", tail)
+
     @staticmethod
     def _db(temp_dir: str) -> Database:
         db = Database(Path(temp_dir) / "observability.sqlite3")
         db.initialize()
         return db
-
-    @staticmethod
-    def _close_root_handlers() -> None:
-        root = logging.getLogger()
-        for handler in root.handlers[:]:
-            root.removeHandler(handler)
-            handler.close()
 
 
 if __name__ == "__main__":

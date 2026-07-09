@@ -28,7 +28,7 @@ from rok_assistant.emulator import (
     MEmuManager,
 )
 from rok_assistant.export_import import ConfigurationService
-from rok_assistant.logging_setup import configure_logging
+from rok_assistant.logging_setup import configure_logging, shutdown_logging
 from rok_assistant.observability import DashboardMetricsService, SupportBundleExporter
 from rok_assistant.paths import ensure_runtime_dirs, resolve_project_path
 from rok_assistant.recovery import ErrorRecoveryPolicy
@@ -228,11 +228,12 @@ class AppContext:
             ),
         )
 
-    def dashboard_stats(self) -> DashboardStats:
+    def dashboard_stats(self, *, force_refresh: bool = False) -> DashboardStats:
         return self.dashboard_metrics.collect(
             active_workers=self.scheduler.active_workers,
             running_instances=self.emulator_manager.running_count(),
             max_workers=self.worker_pool.max_workers,
+            force_refresh=force_refresh,
         )
 
     def schedule_enabled_work(self) -> int:
@@ -282,6 +283,9 @@ class AppContext:
                 created += 1
 
         self.scheduler.wake()
+        dashboard_metrics = getattr(self, "dashboard_metrics", None)
+        if dashboard_metrics is not None:
+            dashboard_metrics.invalidate()
         logging.getLogger("rok_assistant").info("Created %s scheduled task(s).", created)
         return created
 
@@ -291,6 +295,7 @@ class AppContext:
         self.scheduler.stop()
         self.db.close()
         self.closed = True
+        shutdown_logging()
 
 
 def run_app() -> int:

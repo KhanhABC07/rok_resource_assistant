@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QPlainTextEdit, QPushButton, QVBoxLayou
 
 from rok_assistant.app import AppContext
 from rok_assistant.gui.widgets import SectionCard, apply_button_variant
+from rok_assistant.observability import DEFAULT_LOG_TAIL_BYTES, read_text_tail
 
 
 class LogViewerWidget(QWidget):
@@ -15,6 +16,7 @@ class LogViewerWidget(QWidget):
         self.viewer.setObjectName("logViewer")
         self.viewer.setReadOnly(True)
         self.viewer.setPlaceholderText("No log entries yet.")
+        self._last_log_signature: tuple[int, int] | None = None
         self.refresh_button = QPushButton("Refresh")
         self.clear_button = QPushButton("Clear Log")
         apply_button_variant(self.refresh_button, "secondary")
@@ -41,13 +43,21 @@ class LogViewerWidget(QWidget):
 
     def refresh(self) -> None:
         log_file = self.context.config.log_file
-        if not log_file.exists():
-            self.viewer.setPlainText("")
+        try:
+            stat = log_file.stat()
+        except OSError:
+            if self._last_log_signature is not None:
+                self.viewer.setPlainText("")
+                self._last_log_signature = None
             return
-        text = log_file.read_text(encoding="utf-8", errors="replace")
-        self.viewer.setPlainText(text[-120_000:])
+        signature = (stat.st_size, stat.st_mtime_ns)
+        if signature == self._last_log_signature:
+            return
+        self._last_log_signature = signature
+        self.viewer.setPlainText(read_text_tail(log_file, DEFAULT_LOG_TAIL_BYTES))
         self.viewer.verticalScrollBar().setValue(self.viewer.verticalScrollBar().maximum())
 
     def clear_log(self) -> None:
         self.context.config.log_file.write_text("", encoding="utf-8")
+        self._last_log_signature = None
         self.refresh()

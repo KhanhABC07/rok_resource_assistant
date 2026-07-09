@@ -12,6 +12,8 @@ from rok_assistant.gui.widgets import (
     set_table_item,
 )
 
+DASHBOARD_REFRESH_INTERVAL_MS = 5000
+
 
 class DashboardWidget(QWidget):
     def __init__(self, context: AppContext):
@@ -73,12 +75,18 @@ class DashboardWidget(QWidget):
         layout.addWidget(overview_card, 1)
 
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh)
-        self.timer.start(3000)
+        self.timer.timeout.connect(self._refresh_from_timer)
+        self.timer.start(DASHBOARD_REFRESH_INTERVAL_MS)
         self.refresh()
 
     def refresh(self) -> None:
-        stats = self.context.dashboard_stats()
+        self._refresh(force_metrics=True)
+
+    def _refresh_from_timer(self) -> None:
+        self._refresh(force_metrics=False)
+
+    def _refresh(self, *, force_metrics: bool) -> None:
+        stats = self.context.dashboard_stats(force_refresh=force_metrics)
         self.active_workers.set_value(stats.active_workers)
         self.running_instances.set_value(stats.running_instances)
         self.total_characters.set_value(stats.total_characters)

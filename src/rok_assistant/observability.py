@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import platform
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from . import __version__
@@ -15,6 +17,9 @@ from .db.models import DashboardStats
 from .paths import LOG_DIR, RUNTIME_DIR
 from .security import redact_text, redact_value
 
+DEFAULT_DASHBOARD_METRICS_CACHE_SECONDS = 2.0
+DEFAULT_LOG_TAIL_BYTES = 120_000
+
 
 @dataclass(frozen=True)
 class SupportBundleResult:
@@ -22,10 +27,56 @@ class SupportBundleResult:
 
 
 class DashboardMetricsService:
-    def __init__(self, db: Database):
+    def __init__(
+        self,
+        db: Database,
+        *,
+        cache_seconds: float = DEFAULT_DASHBOARD_METRICS_CACHE_SECONDS,
+        clock: Callable[[], float] = monotonic,
+    ):
+        if cache_seconds < 0:
+            raise ValueError("cache_seconds must be non-negative.")
         self.db = db
+        self.cache_seconds = cache_seconds
+        self.clock = clock
+        self._cached_at = 0.0
+        self._cached_key: tuple[int, int, int] | None = None
+        self._cached_stats: DashboardStats | None = None
 
-    def collect(self, *, active_workers: int, running_instances: int, max_workers: int) -> DashboardStats:
+    def collect(
+        self,
+        *,
+        active_workers: int,
+        running_instances: int,
+        max_workers: int,
+        force_refresh: bool = False,
+    ) -> DashboardStats:
+        now = self.clock()
+        cache_key = (active_workers, running_instances, max_workers)
+        if (
+            not force_refresh
+            and self._cached_stats is not None
+            and self._cached_key == cache_key
+            and now - self._cached_at < self.cache_seconds
+        ):
+            return self._cached_stats
+
+        stats = self._collect_uncached(
+            active_workers=active_workers,
+            running_instances=running_instances,
+            max_workers=max_workers,
+        )
+        self._cached_at = now
+        self._cached_key = cache_key
+        self._cached_stats = stats
+        return stats
+
+    def invalidate(self) -> None:
+        self._cached_stats = None
+        self._cached_key = None
+        self._cached_at = 0.0
+
+    def _collect_uncached(self, *, active_workers: int, running_instances: int, max_workers: int) -> DashboardStats:
         task_counts = self._counts_by_status("scheduled_tasks")
         job_counts = self._counts_by_status("jobs")
         recent_runs = self._recent_task_results()
@@ -205,3 +256,16 @@ class SupportBundleExporter:
         except OSError:
             content = ""
         archive.writestr(f"logs/{path.name}", redact_text(content))
+
+
+def read_text_tail(path: Path, max_bytes: int = DEFAULT_LOG_TAIL_BYTES) -> str:
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive.")
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.seek(max(0, size - max_bytes))
+            content = handle.read(max_bytes)
+    except OSError:
+        return ""
+    return content.decode("utf-8", errors="replace")

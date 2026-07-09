@@ -12,7 +12,7 @@ from rok_assistant.db.database import Database
 from rok_assistant.db.models import Character, GameAccount, Instance
 from rok_assistant.db.repositories import CharacterRepository, GameAccountRepository, InstanceRepository
 from rok_assistant.export_import import ConfigurationService
-from rok_assistant.logging_setup import configure_logging
+from rok_assistant.logging_setup import configure_logging, shutdown_logging
 from rok_assistant.security import (
     CredentialFailureReason,
     InMemorySecretStore,
@@ -72,16 +72,12 @@ class CredentialSecurityTest(unittest.TestCase):
                 "token-value",
             )
             logging.getLogger("test.security").info({"password": secret})
-            for handler in logging.getLogger().handlers:
-                handler.flush()
+            shutdown_logging()
 
             log_text = log_file.read_text(encoding="utf-8")
             self.assertNotIn(secret, log_text)
             self.assertNotIn("token-value", log_text)
             self.assertIn("[REDACTED]", log_text)
-            for handler in logging.getLogger().handlers[:]:
-                logging.getLogger().removeHandler(handler)
-                handler.close()
 
     def test_export_and_import_keep_secret_material_out_of_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
