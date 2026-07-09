@@ -31,6 +31,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 
 $artifactName = "rok-resource-assistant-$Version-$Channel-windows"
 $distPath = Join-Path $DistRoot $artifactName
+$pyinstallerDistPath = Join-Path $DistRoot "rok-resource-assistant"
 $zipPath = Join-Path $DistRoot "$artifactName.zip"
 $checksumPath = "$zipPath.sha256"
 $sbomPath = Join-Path $DistRoot "$artifactName.cyclonedx.json"
@@ -55,6 +56,17 @@ if (-not $SkipTests) {
 
 Invoke-Step "Build PyInstaller distribution" {
     & $Python -m PyInstaller --noconfirm packaging/pyinstaller/rok_resource_assistant.spec --distpath $DistRoot --workpath build/pyinstaller
+}
+
+Invoke-Step "Prepare release output directory" {
+    New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
+    if ((Test-Path $pyinstallerDistPath) -and ($pyinstallerDistPath -ne $distPath)) {
+        if (Test-Path $distPath) {
+            Remove-Item -LiteralPath $distPath -Recurse -Force
+        }
+        Move-Item -LiteralPath $pyinstallerDistPath -Destination $distPath
+    }
+    New-Item -ItemType Directory -Force -Path $distPath | Out-Null
 }
 
 Invoke-Step "Write release metadata" {
