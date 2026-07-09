@@ -7,3 +7,10 @@ runtime/
 dist/
 build/
 *.egg-info/
+*.exe
+*.msi
+*.zip
+*.sha256
+*.spdx.json
+*.cyclonedx.json
+release/

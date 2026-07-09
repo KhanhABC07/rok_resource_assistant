@@ -1,0 +1,64 @@
+name: Windows CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_channel:
+        description: "Release channel"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - canary
+          - stable
+      template_pack_version:
+        description: "Template pack version"
+        required: true
+        default: "unversioned"
+
+jobs:
+  test-build-package:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+      RELEASE_CHANNEL: ${{ github.event.inputs.release_channel || 'staging' }}
+      TEMPLATE_PACK_VERSION: ${{ github.event.inputs.template_pack_version || 'unversioned' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements-lock.txt
+
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+
+      - name: Validate packaging inputs, migrations, and template packs
+        run: python scripts/validate_packaging.py --channel $env:RELEASE_CHANNEL --template-pack-version $env:TEMPLATE_PACK_VERSION
+
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Build Windows artifact
+        run: .\scripts\build_windows.ps1 -Channel $env:RELEASE_CHANNEL -TemplatePackVersion $env:TEMPLATE_PACK_VERSION -Python python -SkipInstall -SkipTests
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rok-resource-assistant-windows-${{ env.RELEASE_CHANNEL }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+            dist/*.cyclonedx.json
+          if-no-files-found: error
